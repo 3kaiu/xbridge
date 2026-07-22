@@ -1,6 +1,7 @@
 name: Android SDK (xbridge-android)
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
