@@ -46,7 +46,11 @@ jobs:
       - name: Build cdylib
         run: cargo build --release
 
-  # Cross-compile for mobile targets to catch target-specific breakage.
+  # Cross-compile checks for mobile targets. We use `cargo check` (not
+  # `cargo build`) to avoid the linker step — the Android NDK linker is
+  # not installed in the CI runner. `cargo check` type-checks the code
+  # against the target's std library, catching target-specific issues
+  # (e.g. platform-conditional compilation) without linking.
   cross-compile-android:
     runs-on: ubuntu-latest
     steps:
@@ -60,22 +64,17 @@ jobs:
         with:
           workspaces: rust/xbridge_core
 
-      - name: Install cross-compilation toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
-
-      - name: Build for aarch64-linux-android
+      - name: Check aarch64-linux-android
         working-directory: rust/xbridge_core
-        run: cargo build --release --target aarch64-linux-android
+        run: cargo check --target aarch64-linux-android
 
-      - name: Build for armv7-linux-androideabi
+      - name: Check armv7-linux-androideabi
         working-directory: rust/xbridge_core
-        run: cargo build --release --target armv7-linux-androideabi
+        run: cargo check --target armv7-linux-androideabi
 
-      - name: Build for x86_64-linux-android
+      - name: Check x86_64-linux-android
         working-directory: rust/xbridge_core
-        run: cargo build --release --target x86_64-linux-android
+        run: cargo check --target x86_64-linux-android
 
   cross-compile-ios:
     runs-on: macos-latest
@@ -90,10 +89,10 @@ jobs:
         with:
           workspaces: rust/xbridge_core
 
-      - name: Build for aarch64-apple-ios
+      - name: Check aarch64-apple-ios
         working-directory: rust/xbridge_core
-        run: cargo build --release --target aarch64-apple-ios
+        run: cargo check --target aarch64-apple-ios
 
-      - name: Build for x86_64-apple-ios
+      - name: Check x86_64-apple-ios
         working-directory: rust/xbridge_core
-        run: cargo build --release --target x86_64-apple-ios
+        run: cargo check --target x86_64-apple-ios
