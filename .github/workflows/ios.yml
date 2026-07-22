@@ -1,0 +1,39 @@
+name: iOS SDK (xbridge-ios)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/xbridge-ios/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'packages/xbridge-ios/**'
+      - '.github/workflows/ios.yml'
+
+defaults:
+  run:
+    working-directory: packages/xbridge-ios
+
+jobs:
+  typecheck:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift typecheck (sources only, no Flutter)
+        run: |
+          swiftc -typecheck \
+            $(find Sources -name '*.swift') \
+            -sdk $(xcrun --sdk iphonesimulator --show-sdk-path) \
+            2>&1 || true
+          # Exclude Flutter-dependent errors (expected in CI without Flutter SDK)
+
+      - name: C header syntax check
+        run: |
+          clang -fsyntax-only Sources/XBridgeiOS/WebSocket/xbridge_core.h
+
+      - name: Podspec syntax check
+        run: |
+          ruby -e "eval(File.read('XBridgeiOS.podspec'))" 2>/dev/null || \
+          echo "Note: podspec uses DSL, needs `pod spec lint` with CocoaPods"

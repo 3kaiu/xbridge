@@ -1,0 +1,45 @@
+name: Rust Core (xbridge_core)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/xbridge_core/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'rust/xbridge_core/**'
+      - '.github/workflows/rust.yml'
+
+defaults:
+  run:
+    working-directory: rust/xbridge_core
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/xbridge_core
+
+      - name: Check
+        run: cargo check --all-targets
+
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+        continue-on-error: true
+
+      - name: Build cdylib
+        run: cargo build --release

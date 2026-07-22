@@ -1,0 +1,43 @@
+name: Flutter SDK (xbridge_flutter)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/xbridge_flutter/**'
+      - 'packages/xbridge_platform_interface/**'
+      - '.github/workflows/flutter.yml'
+  pull_request:
+    paths:
+      - 'packages/xbridge_flutter/**'
+      - 'packages/xbridge_platform_interface/**'
+      - '.github/workflows/flutter.yml'
+
+defaults:
+  run:
+    working-directory: packages/xbridge_flutter
+
+jobs:
+  analyze-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze xbridge_flutter
+        run: dart analyze
+
+      - name: Analyze platform interface
+        working-directory: packages/xbridge_platform_interface
+        run: dart analyze
+
+      - name: Dry-run pub publish
+        run: flutter pub publish --dry-run
+        continue-on-error: true

@@ -1,0 +1,38 @@
+name: JS SDK (xbridge-js)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/xbridge-js/**'
+      - '.github/workflows/js.yml'
+  pull_request:
+    paths:
+      - 'packages/xbridge-js/**'
+      - '.github/workflows/js.yml'
+
+defaults:
+  run:
+    working-directory: packages/xbridge-js
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: packages/xbridge-js/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm pack --dry-run
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xbridge-js-dist
+          path: packages/xbridge-js/dist/
