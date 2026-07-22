@@ -1,6 +1,7 @@
 name: Flutter SDK (xbridge_flutter)
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:

@@ -1,6 +1,7 @@
 name: iOS SDK (xbridge-ios)
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:

@@ -1,6 +1,7 @@
 name: JS SDK (xbridge-js)
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
