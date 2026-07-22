@@ -65,7 +65,7 @@ class InAppWebViewBridgeAdapter {
   }
 
   static const String _bootstrapScript = ''
-      'window.__YASHI_APP_BRIDGE__=window.__YASHI_APP_BRIDGE__||{'
+      'window.__XBridge__=window.__XBridge__||{'
       'resolve:function(){},'
       'reject:function(){}'
       '};';
@@ -83,17 +83,17 @@ class _InAppWebViewTransport implements BridgeTransport {
 
   @override
   Future<void> resolve(String id, dynamic result) {
-    final script = 'window.__YASHI_APP_BRIDGE__'
-        '&&window.__YASHI_APP_BRIDGE__.resolve'
-        '&&window.__YASHI_APP_BRIDGE__.resolve(${BridgeJavaScriptTransport.safeJsonEncode(id)},${BridgeJavaScriptTransport.safeJsonEncode(result)});';
+    final script = 'window.__XBridge__'
+        '&&window.__XBridge__.resolve'
+        '&&window.__XBridge__.resolve(${BridgeJavaScriptTransport.safeJsonEncode(id)},${BridgeJavaScriptTransport.safeJsonEncode(result)});';
     return _controller.evaluateJavascript(source: script);
   }
 
   @override
   Future<void> reject(String id, BridgeError error) {
-    final script = 'window.__YASHI_APP_BRIDGE__'
-        '&&window.__YASHI_APP_BRIDGE__.reject'
-        '&&window.__YASHI_APP_BRIDGE__.reject(${BridgeJavaScriptTransport.safeJsonEncode(id)},${BridgeJavaScriptTransport.safeJsonEncode(error.toJson())});';
+    final script = 'window.__XBridge__'
+        '&&window.__XBridge__.reject'
+        '&&window.__XBridge__.reject(${BridgeJavaScriptTransport.safeJsonEncode(id)},${BridgeJavaScriptTransport.safeJsonEncode(error.toJson())});';
     return _controller.evaluateJavascript(source: script);
   }
 
@@ -104,7 +104,7 @@ class _InAppWebViewTransport implements BridgeTransport {
       'params': event.params,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
-    final script = 'window.dispatchEvent(new CustomEvent(${BridgeJavaScriptTransport.safeJsonEncode('YashiAppEvent')},'
+    final script = 'window.dispatchEvent(new CustomEvent(${BridgeJavaScriptTransport.safeJsonEncode('XBridgeEvent')},'
         '{detail:${BridgeJavaScriptTransport.safeJsonEncode(detail)}}));';
     return _controller.evaluateJavascript(source: script);
   }

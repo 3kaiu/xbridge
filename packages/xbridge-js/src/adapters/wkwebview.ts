@@ -1,17 +1,17 @@
 /**
- * WKBridgeAdapter — bridges the iOS WKWebView `humanBridge` protocol into the
- * XBridge JSON-RPC wire format.
+ * WKWebViewAdapter — bridges the iOS WKWebView `XBridgeWK` message handler
+ * protocol into the XBridge JSON-RPC wire format.
  *
- * Existing contract (yashi-h5 `callWKBridge`):
+ * Existing contract (the consumer app's WK bridge):
  *
  *   H5 → Host (array post — NOT JSON-RPC on the wire):
- *     window.webkit.messageHandlers.humanBridge.postMessage(
+ *     window.webkit.messageHandlers.XBridgeWK.postMessage(
  *       [method, data, requestId, timestamp]
  *     )
  *     - requestId === null for fire-and-forget (noCallback) calls.
  *
  *   Host → H5:
- *     window.__wkBridgeCallback(requestId, result, error)
+ *     window.__XBridgeWKCallback__(requestId, result, error)
  *
  * Because the WK transport is array-based and not JSON-RPC, this adapter owns
  * the protocol gap: on `send` it emits the legacy array; on inbound it
@@ -22,19 +22,19 @@
 import type { IXBridgeAdapter } from "../core/adapter.js";
 import { XBRIDGE_PROTOCOL_VERSION } from "../types.js";
 
-interface WKBridgeCallback {
+interface XBridgeWKCallback {
   (requestId: string | null, result?: unknown, error?: unknown): void;
 }
 
 interface WindowWithWK {
   webkit?: {
     messageHandlers?: {
-      humanBridge?: {
+      XBridgeWK?: {
         postMessage: (message: unknown[]) => void;
       };
     };
   };
-  __wkBridgeCallback?: WKBridgeCallback;
+  __XBridgeWKCallback__?: XBridgeWKCallback;
   __XBridgeInbound__?: (raw: string) => void;
 }
 
@@ -44,9 +44,9 @@ function getWindow(): WindowWithWK | undefined {
     : undefined;
 }
 
-/** Adapter for `window.webkit.messageHandlers.humanBridge`. */
-export class WKBridgeAdapter implements IXBridgeAdapter {
-  readonly name = "WKBridge";
+/** Adapter for `window.webkit.messageHandlers.XBridgeWK`. */
+export class WKWebViewAdapter implements IXBridgeAdapter {
+  readonly name = "WKWebView";
   private inbound: ((raw: string) => void) | undefined;
   private installed = false;
 
@@ -54,15 +54,15 @@ export class WKBridgeAdapter implements IXBridgeAdapter {
     const w = getWindow();
     return (
       w !== undefined &&
-      typeof w.webkit?.messageHandlers?.humanBridge?.postMessage === "function"
+      typeof w.webkit?.messageHandlers?.XBridgeWK?.postMessage === "function"
     );
   }
 
   send(message: string): void {
     const w = getWindow();
-    const post = w?.webkit?.messageHandlers?.humanBridge?.postMessage;
+    const post = w?.webkit?.messageHandlers?.XBridgeWK?.postMessage;
     if (typeof post !== "function") {
-      throw new Error("[WKBridgeAdapter] humanBridge.postMessage is not available");
+      throw new Error("[WKWebViewAdapter] XBridgeWK.postMessage is not available");
     }
     let parsed: {
       method: string;
@@ -75,12 +75,12 @@ export class WKBridgeAdapter implements IXBridgeAdapter {
       // If the core ever sends a non-JSON payload (defensive), we cannot map
       // it to the array contract — drop it loudly.
       if (typeof console !== "undefined") {
-        console.warn("[WKBridgeAdapter] dropped non-JSON send payload");
+        console.warn("[WKWebViewAdapter] dropped non-JSON send payload");
       }
       return;
     }
     // Emit the legacy array: [method, data, requestId, timestamp].
-    // requestId === null ⇒ fire-and-forget (matches callWKBridge noCallback).
+    // requestId === null ⇒ fire-and-forget (matches noCallback semantics).
     const id = parsed.id ?? null;
     post([parsed.method, parsed.params, id, Date.now()]);
   }
@@ -100,7 +100,7 @@ export class WKBridgeAdapter implements IXBridgeAdapter {
       return;
     }
     const self = this;
-    const callback: WKBridgeCallback = (
+    const callback: XBridgeWKCallback = (
       requestId: string | null,
       result?: unknown,
       error?: unknown,
@@ -113,11 +113,11 @@ export class WKBridgeAdapter implements IXBridgeAdapter {
     };
 
     // Preserve any prior install by chaining. In practice XBridge owns this
-    // global; legacy yashi-h5 registered `handleNativeCallback` here before
+    // global; the consumer app may have registered a callback here before
     // adopting XBridge — chaining keeps a brownfield migration no-op safe.
-    const prior = w.__wkBridgeCallback;
+    const prior = w.__XBridgeWKCallback__;
     if (typeof prior === "function") {
-      w.__wkBridgeCallback = (
+      w.__XBridgeWKCallback__ = (
         requestId: string | null,
         result?: unknown,
         error?: unknown,
@@ -126,7 +126,7 @@ export class WKBridgeAdapter implements IXBridgeAdapter {
         prior(requestId, result, error);
       };
     } else {
-      w.__wkBridgeCallback = callback;
+      w.__XBridgeWKCallback__ = callback;
     }
 
     // Install the inbound global for Native→H5 requests. The Native host

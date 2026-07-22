@@ -56,7 +56,7 @@ class XBridgePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     /**
      * Set the [XBridgeNativeBridge] delegate that the app provides to forward
-     * calls to its legacy native bridge (e.g. DsBridge). Must be called before
+     * calls to its legacy native bridge (e.g. your existing native bridge). Must be called before
      * any method call arrives, or calls will error with `NO_NATIVE_BRIDGE`.
      */
     fun setNativeBridge(bridge: XBridgeNativeBridge?) {

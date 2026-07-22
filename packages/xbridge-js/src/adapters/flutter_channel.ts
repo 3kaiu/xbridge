@@ -1,38 +1,42 @@
 /**
- * AppBridgeAdapter — bridges the legacy `window.AppBridge` protocol into the
- * XBridge JSON-RPC wire format.
+ * FlutterChannelAdapter — bridges the `window.XBridge` (Flutter JavaScriptChannel)
+ * protocol into the XBridge JSON-RPC wire format.
  *
- * Existing contract (yashi-h5 / flutter_yashi_ai `CommonJsBridge`):
+ * Existing contract (the host app's `CommonJsBridge`):
  *
  *   H5 → Host:
- *     window.AppBridge.postMessage(JSON.stringify({ id, method, params }))
+ *     window.XBridge.postMessage(JSON.stringify({ id, method, params }))
  *
  *   Host → H5 (resolve / reject an outstanding request):
- *     window.__YASHI_APP_BRIDGE__.resolve(id, result)
- *     window.__YASHI_APP_BRIDGE__.reject(id, error)
+ *     window.__XBridge__.resolve(id, result)
+ *     window.__XBridge__.reject(id, error)
  *
  *   Host → H5 (push event):
- *     window.dispatchEvent(new CustomEvent('YashiAppEvent', { detail }))
+ *     window.dispatchEvent(new CustomEvent('XBridgeEvent', { detail }))
  *
- * This adapter installs (or augments) the global `__YASHI_APP_BRIDGE__` object
+ * This adapter installs (or augments) the global `__XBridge__` object
  * and synthesizes JSON-RPC response strings for the core to consume. Host
  * events are also routed through by translating `CustomEvent.detail` into a
  * JSON-RPC event envelope.
+ *
+ * Security: the `__XBridge__` global is defined via `Object.defineProperty`
+ * as non-configurable and non-enumerable, preventing page scripts from
+ * replacing or enumerating the hook.
  */
 
 import type { IXBridgeAdapter } from "../core/adapter.js";
 import { XBRIDGE_PROTOCOL_VERSION } from "../types.js";
 
-/** Shape of the legacy resolve/reject surface installed on `window`. */
-interface AppBridgeGlobal {
+/** Shape of the resolve/reject surface installed on `window`. */
+interface XBridgeGlobal {
   resolve?: (id: string, result?: unknown) => void;
   reject?: (id: string, error?: unknown) => void;
   [key: string]: unknown;
 }
 
-interface WindowWithAppBridge {
-  AppBridge?: { postMessage: (message: string) => void };
-  __YASHI_APP_BRIDGE__?: AppBridgeGlobal;
+interface WindowWithXBridge {
+  XBridge?: { postMessage: (message: string) => void };
+  __XBridge__?: XBridgeGlobal;
   __XBridgeInbound__?: (raw: string) => void;
   addEventListener?: (
     type: string,
@@ -44,18 +48,21 @@ interface WindowWithAppBridge {
   ) => void;
 }
 
-function getWindow(): WindowWithAppBridge | undefined {
+function getWindow(): WindowWithXBridge | undefined {
   return typeof globalThis !== "undefined"
-    ? (globalThis as unknown as WindowWithAppBridge)
+    ? (globalThis as unknown as WindowWithXBridge)
     : undefined;
 }
 
+/** Event name for host-pushed CustomEvents. */
+const XBRIDGE_EVENT_NAME = "XBridgeEvent";
+
 /**
- * Adapter for `window.AppBridge`. Single `postMessage` channel; inbound route
- * via the `__YASHI_APP_BRIDGE__` global + `YashiAppEvent` CustomEvent.
+ * Adapter for `window.XBridge`. Single `postMessage` channel; inbound route
+ * via the `__XBridge__` global + `XBridgeEvent` CustomEvent.
  */
-export class AppBridgeAdapter implements IXBridgeAdapter {
-  readonly name = "AppBridge";
+export class FlutterChannelAdapter implements IXBridgeAdapter {
+  readonly name = "XBridge";
   private inbound: ((raw: string) => void) | undefined;
   private installed = false;
   private eventListener: ((event: unknown) => void) | undefined;
@@ -66,15 +73,15 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
 
   isAvailable(): boolean {
     const w = getWindow();
-    return w !== undefined && typeof w.AppBridge?.postMessage === "function";
+    return w !== undefined && typeof w.XBridge?.postMessage === "function";
   }
 
   send(message: string): void {
     const w = getWindow();
-    if (w === undefined || w.AppBridge === undefined) {
-      throw new Error("[AppBridgeAdapter] window.AppBridge is not available");
+    if (w === undefined || w.XBridge === undefined) {
+      throw new Error("[FlutterChannelAdapter] window.XBridge is not available");
     }
-    w.AppBridge.postMessage(message);
+    w.XBridge.postMessage(message);
   }
 
   onMessage(handler: (raw: string) => void): void {
@@ -83,8 +90,14 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
   }
 
   /**
-   * Install (or wrap) the global `__YASHI_APP_BRIDGE__` and the event listener.
+   * Install (or wrap) the global `__XBridge__` and the event listener.
    * Idempotent — safe to call multiple times; only installs once per adapter.
+   *
+   * Security: when creating a fresh `__XBridge__` object, it is defined via
+   * `Object.defineProperty` with `configurable: false` and `enumerable: false`
+   * so page scripts cannot replace or enumerate the hook. When an existing
+   * object is already present (installed by the host), its methods are patched
+   * in place — the property descriptor is left as-is out of caution.
    */
   private ensureInstalled(): void {
     if (this.installed) {
@@ -107,7 +120,7 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
 
     // Patch methods on the existing object instead of replacing it — preserves
     // any other properties the host may have installed.
-    const existing = w.__YASHI_APP_BRIDGE__;
+    const existing = w.__XBridge__;
     if (existing !== undefined) {
       // Preserve any prior install: chain behind it so existing callers still
       // observe. In practice the bridge is the sole owner, but be defensive.
@@ -128,21 +141,28 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
       this.patchedResolve = existing.resolve;
       this.patchedReject = existing.reject;
     } else {
-      const obj: AppBridgeGlobal = {
+      const obj: XBridgeGlobal = {
         resolve: resolveFn,
         reject: rejectFn,
       };
-      w.__YASHI_APP_BRIDGE__ = obj;
+      // Define as non-configurable and non-enumerable to prevent page scripts
+      // from replacing or discovering the hook via enumeration.
+      Object.defineProperty(w, "__XBridge__", {
+        value: obj,
+        writable: true,
+        configurable: false,
+        enumerable: false,
+      });
       this.patchedResolve = resolveFn;
       this.patchedReject = rejectFn;
     }
 
-    // Host-pushed events arrive as CustomEvent('YashiAppEvent', { detail }).
+    // Host-pushed events arrive as CustomEvent('XBridgeEvent', { detail }).
     // The legacy detail shape is { actionType, requestId?, params?, timestamp }.
     // We re-wrap it into a JSON-RPC event envelope so the core's single parser
     // handles both responses and events uniformly. `method` is taken from
     // `actionType` when present, falling back to the literal event name so
-    // listeners keyed on 'YashiAppEvent' still receive the payload.
+    // listeners keyed on 'XBridgeEvent' still receive the payload.
     if (typeof w.addEventListener === "function") {
       this.eventListener = (event: unknown): void => {
         const detail = (event as { detail?: unknown } | null)?.detail;
@@ -151,17 +171,17 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
         const method =
           detailRecord !== null && typeof detailRecord["actionType"] === "string"
             ? String(detailRecord["actionType"])
-            : "YashiAppEvent";
+            : XBRIDGE_EVENT_NAME;
         self.dispatchEvent(method, detail);
       };
-      w.addEventListener("YashiAppEvent", this.eventListener);
+      w.addEventListener(XBRIDGE_EVENT_NAME, this.eventListener);
     }
 
     // Install the inbound global for Native→H5 requests. The Native host
     // injects `window.__XBridgeInbound__(rawJson)` to send a JSON-RPC request
     // (with both `id` and `method`) to the H5 side; the core's `handleRaw`
     // looks up a registered handler and sends back a response via
-    // `adapter.send()` (which calls `AppBridge.postMessage`).
+    // `adapter.send()` (which calls `XBridge.postMessage`).
     w.__XBridgeInbound__ = (raw: string): void => {
       self.inbound?.(raw);
     };
@@ -179,10 +199,10 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
     const w = getWindow();
     if (w !== undefined) {
       if (this.eventListener !== undefined && typeof w.removeEventListener === "function") {
-        w.removeEventListener("YashiAppEvent", this.eventListener);
+        w.removeEventListener(XBRIDGE_EVENT_NAME, this.eventListener);
       }
       // Restore prior handlers if we patched an existing object.
-      const existing = w.__YASHI_APP_BRIDGE__;
+      const existing = w.__XBridge__;
       if (existing !== undefined) {
         if (this.priorResolve !== undefined) {
           existing.resolve = this.priorResolve;

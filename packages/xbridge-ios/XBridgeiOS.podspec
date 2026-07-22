@@ -6,7 +6,7 @@ Pod::Spec.new do |s|
 XBridgeiOS is the native iOS component of the XBridge SDK. It provides:
 1. A Flutter MethodChannel receiver (`xbridge/native_fallback`) that forwards
    unregistered H5 methods to an app-supplied delegate (typically the existing
-   DsBridge handler), keeping the SDK free of business logic.
+   your existing native bridge handler), keeping the SDK free of business logic.
 2. A `XBridgeSync` WKScriptMessageHandler for bridge calls that bypass the
    async Flutter channel. (Subject to WKWebView async-delivery limitations —
    see README for the `prompt()` interception alternative.)

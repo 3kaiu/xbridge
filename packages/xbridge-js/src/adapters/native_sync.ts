@@ -1,11 +1,12 @@
 /**
- * DSBridgeSyncAdapter — the synchronous bypass channel.
+ * NativeSyncAdapter — the synchronous bypass channel.
  *
  * Per PRD §P1 / audit Risk 1: Flutter WebView channels are strictly async,
  * but a handful of legacy H5 call sites depend on a truly synchronous return
  * value (e.g. prompt-based or `@JavascriptInterface` objects injected by the
- * native shell). `dsbridge` historically provided this via
- * `window.dsbridge.call(method, args)` which returns the value synchronously.
+ * native shell). A native sync bridge (detects `window.dsbridge`) historically
+ * provided this via `window.dsbridge.call(method, args)` which returns the
+ * value synchronously.
  *
  * This adapter implements {@link ISyncAdapter} only — it carries no
  * request/response correlation and does not participate in the async dispatcher.
@@ -14,27 +15,33 @@
  *
  * Note: in a pure Flutter WebView environment this adapter is unavailable and
  * `XBridge.callSync` degrades to a warning + `undefined` — by design.
+ *
+ * Security note: `callSync` delegates to `window.dsbridge.call`, which is a
+ * native-injected object accessible from any same-origin frame. Sandboxed
+ * or cross-origin iframes cannot access `window.dsbridge` (it is injected
+ * only into the main frame's context by the native shell). If the host
+ * injects it into subframes, the host is responsible for access control.
  */
 
 import type { ISyncAdapter } from "../core/adapter.js";
 
-interface DsBridgeGlobal {
+interface NativeSyncGlobal {
   call: (method: string, args?: unknown) => unknown;
 }
 
-interface WindowWithDsBridge {
-  dsbridge?: DsBridgeGlobal;
+interface WindowWithNativeSync {
+  dsbridge?: NativeSyncGlobal;
 }
 
-function getWindow(): WindowWithDsBridge | undefined {
+function getWindow(): WindowWithNativeSync | undefined {
   return typeof globalThis !== "undefined"
-    ? (globalThis as unknown as WindowWithDsBridge)
+    ? (globalThis as unknown as WindowWithNativeSync)
     : undefined;
 }
 
-/** Sync adapter backed by `window.dsbridge`. */
-export class DSBridgeSyncAdapter implements ISyncAdapter {
-  readonly name = "DSBridgeSync";
+/** Sync adapter backed by a native sync bridge (detects `window.dsbridge`). */
+export class NativeSyncAdapter implements ISyncAdapter {
+  readonly name = "NativeSync";
 
   isAvailable(): boolean {
     const w = getWindow();
@@ -48,12 +55,12 @@ export class DSBridgeSyncAdapter implements ISyncAdapter {
       // Defensive: `isAvailable()` is checked by the core before calling, but
       // the environment may have torn down between checks.
       if (typeof console !== "undefined") {
-        console.warn(`[DSBridgeSyncAdapter] dsbridge.call unavailable for '${method}'`);
+        console.warn(`[NativeSyncAdapter] native sync bridge unavailable for '${method}'`);
       }
       return undefined;
     }
-    // dsbridge expects the args as the second positional argument; passing
-    // `undefined` is equivalent to no args.
+    // The native sync bridge expects the args as the second positional
+    // argument; passing `undefined` is equivalent to no args.
     return call(method, params);
   }
 }

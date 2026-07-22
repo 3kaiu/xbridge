@@ -46,16 +46,16 @@ If the Rust core is not linked, WebSocket features gracefully degrade — `start
 
 ### 1. Implement the delegate
 
-Create a class that conforms to `XBridgeNativeBridge`. This is the **only** place where business logic enters — it forwards to your existing DsBridge handler:
+Create a class that conforms to `XBridgeNativeBridge`. This is the **only** place where business logic enters — it forwards to your existing native bridge handler:
 
 ```swift
 import XBridgeiOS
 
-class MyAppBridgeAdapter: XBridgeNativeBridge {
+class MyBridgeAdapter: XBridgeNativeBridge {
     func invoke(method: String, params: Any?) -> Any? {
-        // Forward to your existing DsBridge / YashiBridgePlugin handler
+        // Forward to your existing bridge plugin handler
         // Example:
-        // return existingDsBridge.call(method, args: params)
+        // return existingBridge.call(method, args: params)
         return nil
     }
 }
@@ -78,7 +78,7 @@ class AppDelegate: FlutterAppDelegate {
         if let controller = controller {
             let registrar = controller.registrar(forPlugin: "XBridgePlugin")!
             let plugin = XBridgePlugin.register(with: registrar)
-            plugin.nativeBridge = MyAppBridgeAdapter()
+            plugin.nativeBridge = MyBridgeAdapter()
         }
 
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
@@ -92,7 +92,7 @@ In your `WKWebView` setup:
 
 ```swift
 let syncHandler = XBridgeSyncHandler()
-syncHandler.nativeBridge = MyAppBridgeAdapter()
+syncHandler.nativeBridge = MyBridgeAdapter()
 syncHandler.attach(to: webView)
 ```
 
@@ -194,7 +194,7 @@ Sources/XBridgeiOS/
 
 ## Zero Business Coupling
 
-XBridgeiOS contains **no** business methods. It is a generic infrastructure layer. The app supplies a `XBridgeNativeBridge` delegate that forwards `method` strings to its existing bridge handler. No `getToken`, `YashiApi`, `PaymentService`, or similar references appear anywhere in the SDK source.
+XBridgeiOS contains **no** business methods. It is a generic infrastructure layer. The app supplies a `XBridgeNativeBridge` delegate that forwards `method` strings to its existing bridge handler. No `getToken`, `PaymentService`, or similar references appear anywhere in the SDK source.
 
 ## License
 

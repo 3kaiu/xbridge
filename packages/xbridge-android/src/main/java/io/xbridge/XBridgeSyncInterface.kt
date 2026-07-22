@@ -18,7 +18,7 @@ import org.json.JSONObject
  * ## Threading
  *
  * Android `@JavascriptInterface` methods execute on a private WebKit thread,
- * not the UI thread. Many legacy DsBridge handlers require the UI thread
+ * not the UI thread. Many legacy native bridge handlers require the UI thread
  * (they touch `Activity`, `WebView`, etc.). To satisfy both:
  *
  * 1. If the current thread IS the main thread, invoke the delegate directly.

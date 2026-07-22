@@ -2,7 +2,7 @@
 
 Open-source, zero-business-coupling H5 bridge SDK. Implements a JSON-RPC 2.0
 variant protocol with adapters for the common WebView transports
-(`flutter_inappwebview`, `window.AppBridge`, WK `humanBridge`, `dsbridge` sync).
+(`flutter_inappwebview`, `window.XBridge`, WK `XBridgeWK`, native sync bypass).
 
 ## Install
 
@@ -25,7 +25,7 @@ const token = await bridge.call("getToken");
 // Fire-and-forget (mirrors WK noCallback semantics)
 await bridge.call("notifyEnumAction", { foo: 1 }, { noCallback: true });
 
-// Sync bypass — only when a sync adapter (e.g. dsbridge) is present
+// Sync bypass — only when a sync adapter (e.g. your existing native bridge) is present
 const info = bridge.callSync("getAppInfo");
 
 // Subscribe to host-pushed events
@@ -42,27 +42,27 @@ The constructor probes `window` once (cached) and picks the first available
 adapter:
 
 1. `window.flutter_inappwebview.callHandler` → `InAppWebViewAdapter`
-2. `window.AppBridge.postMessage` → `AppBridgeAdapter`
-3. `window.webkit.messageHandlers.humanBridge.postMessage` → `WKBridgeAdapter`
-4. `window.dsbridge.call` → `DSBridgeSyncAdapter` (sync only; `call()` warns)
+2. `window.XBridge.postMessage` → `FlutterChannelAdapter`
+3. `window.webkit.messageHandlers.XBridgeWK.postMessage` → `WKWebViewAdapter`
+4. `window.dsbridge.call` → `NativeSyncAdapter` (sync only; `call()` warns)
 5. none → `NoopAdapter` (warns "no bridge environment")
 
 Override explicitly when you need to force a transport, e.g. for tests:
 
 ```ts
-import { XBridge, AppBridgeAdapter } from "xbridge-js";
+import { XBridge, FlutterChannelAdapter } from "xbridge-js";
 
-const bridge = new XBridge({ adapter: new AppBridgeAdapter() });
+const bridge = new XBridge({ adapter: new FlutterChannelAdapter() });
 ```
 
 ## Adapters
 
 | Adapter | Transport | Direction |
 | --- | --- | --- |
-| `InAppWebViewAdapter` | `window.flutter_inappwebview.callHandler('XBridge', str)` | async bidirectional via `window.__XBridgeDispatch__` |
-| `AppBridgeAdapter` | `window.AppBridge.postMessage(str)` | async bidirectional via `window.__YASHI_APP_BRIDGE__` + `YashiAppEvent` |
-| `WKBridgeAdapter` | `window.webkit.messageHandlers.humanBridge.postMessage([m,d,id,ts])` | async bidirectional via `window.__wkBridgeCallback` |
-| `DSBridgeSyncAdapter` | `window.dsbridge.call(method, args)` | sync only |
+| `InAppWebViewAdapter` | `window.flutter_inappwebview.callHandler('XBridge', str)` | async bidirectional via `window.__XBridgeInbound__` |
+| `FlutterChannelAdapter` | `window.XBridge.postMessage(str)` | async bidirectional via `window.__XBridge__` + `XBridgeEvent` |
+| `WKWebViewAdapter` | `window.webkit.messageHandlers.XBridgeWK.postMessage([m,d,id,ts])` | async bidirectional via `window.__XBridgeWKCallback__` |
+| `NativeSyncAdapter` | `window.dsbridge.call(method, args)` | sync only |
 
 Each adapter installs its inbound handler exactly once and synthesizes JSON-RPC
 response/event envelopes so the core parses a single inbound format.

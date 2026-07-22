@@ -13,19 +13,19 @@
  *   Flutter → H5 (responses + host-pushed events):
  *     // The Flutter side invokes a global JS function injected by this
  *     // adapter. It receives a raw JSON-RPC response or event string.
- *     window.__XBridgeDispatch__(jsonResponseOrEventString)
+ *     window.__XBridgeInbound__(jsonResponseOrEventString)
  *
- * This adapter installs `window.__XBridgeDispatch__` once and routes every
+ * This adapter installs `window.__XBridgeInbound__` once and routes every
  * inbound string to the core's single message handler. On `send`, because
  * `callHandler` is itself Promise-returning, we treat it as fire-and-forget:
- * the actual response will arrive asynchronously via `__XBridgeDispatch__`
+ * the actual response will arrive asynchronously via `__XBridgeInbound__`
  * carrying the matching correlation id. We deliberately do NOT await the
  * returned Promise here — that would duplicate the dispatcher's correlation
  * logic and break the uniform single-parser model.
  *
  * Flutter-side counterpart: `InAppWebViewBridgeAdapter` (xbridge_flutter)
  * registers `addJavaScriptHandler(handlerName: 'XBridge', ...)` and calls back
- * via `window.__XBridgeDispatch__`.
+ * via `window.__XBridgeInbound__`.
  */
 
 import type { IXBridgeAdapter } from "../core/adapter.js";
@@ -36,7 +36,6 @@ interface InAppWebViewGlobal {
 
 interface WindowWithInAppWebView {
   flutter_inappwebview?: InAppWebViewGlobal;
-  __XBridgeDispatch__?: (raw: string) => void;
   __XBridgeInbound__?: (raw: string) => void;
 }
 
@@ -49,8 +48,8 @@ function getWindow(): WindowWithInAppWebView | undefined {
 /** Default handler name on the Flutter side. */
 export const XBRIDGE_INAPP_HANDLER_NAME = "XBridge";
 
-/** Default dispatch function name installed on `window`. */
-export const XBRIDGE_DISPATCH_GLOBAL = "__XBridgeDispatch__";
+/** Default inbound function name installed on `window`. */
+export const XBRIDGE_DISPATCH_GLOBAL = "__XBridgeInbound__";
 
 /** Adapter for `window.flutter_inappwebview`. */
 export class InAppWebViewAdapter implements IXBridgeAdapter {
@@ -79,7 +78,7 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
       throw new Error("[InAppWebViewAdapter] flutter_inappwebview is not available");
     }
     // Fire-and-forget at the transport layer; the Promise resolves later but
-    // we do not await it — correlation is by id in __XBridgeDispatch__.
+    // we do not await it — correlation is by id in __XBridgeInbound__.
     void call(this.handlerName, message).catch((err: unknown): void => {
       if (typeof console !== "undefined") {
         console.warn("[InAppWebViewAdapter] callHandler rejected:", err);
@@ -101,11 +100,11 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
       return;
     }
 
-    // Capture the handler at install time — reading `self.inbound` live would
+    // Capture the handler at install time — reading a live property would
     // route to whatever handler is current, even if onMessage is called again.
     const captured = handler;
     const ownership = InAppWebViewAdapter.OWNERSHIP;
-    const prior = w.__XBridgeDispatch__;
+    const prior = w.__XBridgeInbound__;
 
     // Detect same-class re-install via the ownership marker. If the prior
     // install belongs to an InAppWebViewAdapter instance, replace it directly
@@ -121,7 +120,7 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
     if (priorIsOurs) {
       // Replace the same-class install — no chaining needed.
       (dispatch as unknown as { [key: symbol]: unknown })[ownership] = true;
-      w.__XBridgeDispatch__ = dispatch;
+      w.__XBridgeInbound__ = dispatch;
     } else if (typeof prior === "function") {
       // Chain behind a different-class prior install for brownfield coexistence.
       const chained = (raw: string): void => {
@@ -129,21 +128,21 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
         prior(raw);
       };
       (chained as unknown as { [key: symbol]: unknown })[ownership] = true;
-      w.__XBridgeDispatch__ = chained;
+      w.__XBridgeInbound__ = chained;
     } else {
       (dispatch as unknown as { [key: symbol]: unknown })[ownership] = true;
-      w.__XBridgeDispatch__ = dispatch;
+      w.__XBridgeInbound__ = dispatch;
     }
 
-    this.dispatchFn = w.__XBridgeDispatch__;
+    this.dispatchFn = w.__XBridgeInbound__;
 
-    // Install the inbound global for Native→H5 requests. The Native host
+    // The inbound global also serves Native→H5 requests. The Native host
     // injects `window.__XBridgeInbound__(rawJson)` to send a JSON-RPC request
-    // to the H5 side; the core's `handleRaw` looks up a registered handler
-    // and sends back a response via `adapter.send()`.
-    w.__XBridgeInbound__ = (raw: string): void => {
-      captured(raw);
-    };
+    // (with both `id` and `method`) to the H5 side; the core's `handleRaw`
+    // looks up a registered handler and sends back a response via
+    // `adapter.send()`.
+    // No separate installation needed — the same global handles both
+    // responses/events and inbound requests.
   }
 
   destroy(): void {
@@ -154,13 +153,10 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
     const w = getWindow();
     if (w !== undefined && this.dispatchFn !== undefined) {
       // Only remove if we still own the global (hasn't been replaced by another adapter).
-      if (w.__XBridgeDispatch__ === this.dispatchFn) {
+      if (w.__XBridgeInbound__ === this.dispatchFn) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         delete (w as any)[XBRIDGE_DISPATCH_GLOBAL];
       }
-      // Remove the inbound global we installed.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      delete (w as any).__XBridgeInbound__;
     }
     this.dispatchFn = undefined;
   }

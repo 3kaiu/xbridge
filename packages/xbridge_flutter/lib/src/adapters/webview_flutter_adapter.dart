@@ -18,7 +18,7 @@ import '../bridge_controller.dart';
 ///   whose `onMessageReceived` forwards `msg.message` to
 ///   `bridge.handleRawMessage`.
 /// * Attaches the controller on the bridge so JS callbacks can be injected.
-/// * Installs a no-op `window.__YASHI_APP_BRIDGE__` bootstrap so the H5 SDK
+/// * Installs a no-op `window.__XBridge__` bootstrap so the H5 SDK
 ///   does not crash if it calls `resolve`/`reject` before Flutter is ready —
 ///   the real resolve/reject are injected lazily by [BridgeJavaScriptTransport]
 ///   on each response.
@@ -31,7 +31,7 @@ class WebViewFlutterBridgeAdapter {
   /// The JavaScript bootstrap injected on attach. Keeps the H5 side from
   /// throwing when it references the global before Flutter has responded.
   static const String _bootstrapScript = ''
-      'window.__YASHI_APP_BRIDGE__=window.__YASHI_APP_BRIDGE__||{'
+      'window.__XBridge__=window.__XBridge__||{'
       'resolve:function(){},'
       'reject:function(){}'
       '};';

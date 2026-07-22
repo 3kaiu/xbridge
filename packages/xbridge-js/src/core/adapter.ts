@@ -2,7 +2,7 @@
  * Adapter contracts — the seam between the XBridge core and a concrete transport.
  *
  * Implementations live under {@link ../adapters/}. An adapter owns a single
- * platform channel (e.g. `window.AppBridge`, `window.webkit.messageHandlers`,
+ * platform channel (e.g. `window.XBridge`, `window.webkit.messageHandlers`,
  * `window.flutter_inappwebview`) and is responsible for:
  *
  * 1. Sending a serialized XBridge wire message to the host (`send`).
@@ -51,9 +51,10 @@ export interface IXBridgeAdapter {
 }
 
 /**
- * Sync adapter — a synchronous bypass channel (e.g. `dsbridge`, a native
- * `@JavascriptInterface` object). Calls return immediately; there is no
- * correlation id and no Promise. Used by {@link XBridgeCore.callSync}.
+ * Sync adapter — a synchronous bypass channel (e.g. a native sync bridge that
+ * detects `window.dsbridge`, or a native `@JavascriptInterface` object). Calls
+ * return immediately; there is no correlation id and no Promise. Used by
+ * {@link XBridgeCore.callSync}.
  *
  * Per PRD §P1 / audit Risk 1: Flutter channels are strictly async, so a sync
  * adapter is optional. When absent, `callSync` degrades to a warning + null.

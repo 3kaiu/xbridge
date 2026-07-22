@@ -2,7 +2,7 @@ package io.xbridge
 
 /**
  * Delegate interface that the host app implements to forward XBridge method
- * calls to its existing native bridge (e.g. a DsBridge plugin instance).
+ * calls to its existing native bridge (e.g. your existing native bridge plugin instance).
  *
  * This is the **seam** that keeps XBridge business-free: the SDK itself has
  * zero knowledge of any business method. The app
