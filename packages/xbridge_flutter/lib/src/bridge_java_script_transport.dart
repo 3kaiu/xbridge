@@ -67,17 +67,45 @@ class BridgeJavaScriptTransport {
 
   /// Broadcasts [event] to H5 via a DOM `CustomEvent('YashiAppEvent')`.
   ///
-  /// The `detail` payload matches the legacy shape (`{actionType, requestId?,
-  /// params?, timestamp}`) for backward compatibility, but wraps under the
-  /// XBridge event `method` so `xbridge-js` `onEvent` listeners also receive
-  /// it.
+  /// The `detail` payload matches the legacy shape (`{actionType, params,
+  /// timestamp}`) that the H5 `AppBridgeAdapter` expects — it listens for the
+  /// literal `"YashiAppEvent"` event type and routes by `detail.actionType`.
   static Future<void> dispatchEvent(
     WebViewController controller,
     BridgeEvent event,
   ) {
-    // Build the script in one interpolation pass — no intermediate list/join.
-    final script = 'window.dispatchEvent(new CustomEvent(${safeJsonEncode(event.method)},'
-        '{detail:${safeJsonEncode(event.params)}}));';
+    final detail = <String, dynamic>{
+      'actionType': event.method,
+      'params': event.params,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    final script = 'window.dispatchEvent(new CustomEvent(${safeJsonEncode('YashiAppEvent')},'
+        '{detail:${safeJsonEncode(detail)}}));';
+    return controller.runJavaScript(script);
+  }
+
+  /// Sends a JSON-RPC request to H5, invoking a handler registered via
+  /// `XBridge.registerHandler` on the H5 side.
+  ///
+  /// The H5 SDK installs `window.__XBridgeInbound__` which feeds the raw JSON
+  /// string into `XBridgeCore.handleRaw()`. The H5 side looks up the handler
+  /// by `method`, invokes it, and sends back a response (carrying the same
+  /// `id`) via the adapter's `send` channel. The response is then routed to
+  /// the pending [Completer] in [BridgeController.handleRawMessage].
+  static Future<void> callH5Handler(
+    WebViewController controller,
+    String id,
+    String method,
+    dynamic params,
+  ) {
+    final request = <String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      if (params != null) 'params': params,
+    };
+    final script = 'window.__XBridgeInbound__'
+        '&&window.__XBridgeInbound__(${safeJsonEncode(jsonEncode(request))});';
     return controller.runJavaScript(script);
   }
 }

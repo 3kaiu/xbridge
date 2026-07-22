@@ -59,7 +59,7 @@ export interface XBridgeError {
 }
 
 /** Union of inbound host → H5 wire messages. */
-export type XBridgeMessage = XBridgeResponse | XBridgeEvent;
+export type XBridgeMessage = XBridgeResponse | XBridgeEvent | XBridgeRequest;
 
 /** Options accepted by {@link XBridgeCore.call}. */
 export interface XBridgeCallOptions {

@@ -35,6 +35,7 @@ interface WindowWithWK {
     };
   };
   __wkBridgeCallback?: WKBridgeCallback;
+  __XBridgeInbound__?: (raw: string) => void;
 }
 
 function getWindow(): WindowWithWK | undefined {
@@ -127,6 +128,14 @@ export class WKBridgeAdapter implements IXBridgeAdapter {
     } else {
       w.__wkBridgeCallback = callback;
     }
+
+    // Install the inbound global for Native→H5 requests. The Native host
+    // injects `window.__XBridgeInbound__(rawJson)` to send a JSON-RPC request
+    // to the H5 side; the core's `handleRaw` looks up a registered handler
+    // and sends back a response via `adapter.send()`.
+    w.__XBridgeInbound__ = (raw: string): void => {
+      self.inbound?.(raw);
+    };
   }
 
   private dispatchResponse(id: string, result: unknown, error: unknown): void {

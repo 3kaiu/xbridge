@@ -21,7 +21,7 @@
 
 import type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
 import { XBridgeCore } from "./core/bridge.js";
-import type { XBridgeEventListener } from "./core/bridge.js";
+import type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
 import type { XBridgeCallOptions } from "./types.js";
 import { AppBridgeAdapter } from "./adapters/appbridge.js";
 import { DSBridgeSyncAdapter } from "./adapters/dsbridge_sync.js";
@@ -30,7 +30,7 @@ import { WKBridgeAdapter } from "./adapters/wkbridge.js";
 
 // Re-export the full public surface.
 export { XBridgeCore } from "./core/bridge.js";
-export type { XBridgeEventListener } from "./core/bridge.js";
+export type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
 export { Dispatcher, DEFAULT_TIMEOUT_MS } from "./core/dispatcher.js";
 export type { PendingRequest, TimeoutError } from "./core/dispatcher.js";
 export { generateId } from "./core/id.js";
@@ -228,6 +228,11 @@ export class XBridge {
   /** Subscribe to host-pushed events. @see {@link XBridgeCore.onEvent}. */
   onEvent(method: string, handler: XBridgeEventListener): () => void {
     return this.core.onEvent(method, handler);
+  }
+
+  /** Register a handler for Native→H5 calls. @see {@link XBridgeCore.registerHandler}. */
+  registerHandler(method: string, handler: XBridgeHandler): () => void {
+    return this.core.registerHandler(method, handler);
   }
 
   /** Release all pending requests and listeners. */

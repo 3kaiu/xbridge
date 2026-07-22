@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -17,6 +18,7 @@ abstract class BridgeTransport {
   Future<void> resolve(String id, dynamic result);
   Future<void> reject(String id, BridgeError error);
   Future<void> dispatchEvent(BridgeEvent event);
+  Future<void> callH5Handler(String id, String method, dynamic params);
 }
 
 /// Central request router for the XBridge Flutter SDK.
@@ -44,6 +46,13 @@ class BridgeController {
   XBridgeSecurityPolicy? _policy;
   BridgeTransport? _transport;
   WebViewController? _webViewController;
+
+  /// Pending Native→H5 calls awaiting a response. Keyed by request id.
+  final Map<String, Completer<dynamic>> _pendingH5Calls =
+      <String, Completer<dynamic>>{};
+
+  /// Monotonic counter for generating unique call ids (combined with timestamp).
+  int _h5CallCounter = 0;
 
   /// Registers [handler] for [method]. Replaces any prior registration.
   void addHandler(String method, BridgeMethodHandler handler) {
@@ -94,38 +103,150 @@ class BridgeController {
     return transport.dispatchEvent(event);
   }
 
+  /// Calls a handler registered on the H5 side and awaits its response.
+  ///
+  /// Generates a unique request id, sends a JSON-RPC request to H5 via the
+  /// transport's [callH5Handler], and completes the returned future when the
+  /// H5 response arrives (routed back through [handleRawMessage]).
+  ///
+  /// If [timeout] elapses without a response, the future completes with a
+  /// [TimeoutException]. The pending entry is cleaned up on either outcome.
+  Future<dynamic> callH5(
+    String method, [
+    dynamic params,
+    Duration timeout = const Duration(seconds: 30),
+  ]) {
+    final transport = _transport;
+    if (transport == null) {
+      return Future<dynamic>.error(
+        StateError('[XBridge] callH5 failed: no transport attached'),
+      );
+    }
+
+    final id = '${DateTime.now().millisecondsSinceEpoch}_${_h5CallCounter++}';
+    final completer = Completer<dynamic>();
+    _pendingH5Calls[id] = completer;
+
+    final timer = Timer(timeout, () {
+      if (_pendingH5Calls.remove(id) != null) {
+        completer.completeError(
+          TimeoutException(
+            '[XBridge] callH5("$method") timed out after ${timeout.inSeconds}s',
+            timeout,
+          ),
+        );
+      }
+    });
+
+    transport.callH5Handler(id, method, params).then((_) {
+      // Request sent successfully — response will arrive via handleRawMessage.
+    }).catchError((dynamic error) {
+      if (_pendingH5Calls.remove(id) != null) {
+        timer.cancel();
+        completer.completeError(error);
+      }
+    });
+
+    // When the response arrives, cancel the timeout timer.
+    return completer.future.whenComplete(() {
+      timer.cancel();
+      _pendingH5Calls.remove(id);
+    });
+  }
+
+  /// Routes an inbound H5 response (id present, method absent) to the
+  /// pending [Completer] registered by [callH5].
+  void _completeH5Response(String jsonString) {
+    final BridgeResponse response;
+    try {
+      response = BridgeResponse.parse(jsonString);
+    } catch (error, stackTrace) {
+      debugPrint('[XBridge] Failed to parse H5 response: $error\n$stackTrace');
+      return;
+    }
+    final completer = _pendingH5Calls.remove(response.id);
+    if (completer == null) {
+      // No pending call for this id — likely a duplicate or late response.
+      debugPrint('[XBridge] No pending H5 call for id=${response.id}');
+      return;
+    }
+    if (response.error != null) {
+      completer.completeError(response.error!);
+    } else {
+      completer.complete(response.result);
+    }
+  }
+
   /// Handles a raw JSON message string from the WebView.
   ///
-  /// Performance path: single [jsonDecode] (inside [BridgeRequest.parse]),
-  /// single [Map] lookup for the handler, single [jsonEncode] for the
-  /// response (inside [BridgeResponse.toJsonString]). Handler invocation is
+  /// Performance path: single [jsonDecode] (inside [BridgeRequest.parse] or
+  /// [BridgeResponse.parse]), single [Map] lookup for the handler or pending
+  /// completer, single [jsonEncode] for the response. Handler invocation is
   /// awaited but exceptions are swallowed and reported back to H5.
+  ///
+  /// Routing:
+  /// * `id` present, `method` absent → H5 response to a prior `callH5` →
+  ///   complete the pending [Completer].
+  /// * `method` present (with or without `id`) → H5 request → dispatch to
+  ///   handler. When `id` is null/empty the call is fire-and-forget: the
+  ///   handler still runs but no resolve/reject is sent back.
   Future<void> handleRawMessage(String jsonString) async {
     final transport = _transport;
     if (transport == null) {
       debugPrint('[XBridge] Dropping bridge message: no transport attached');
       return;
     }
-    BridgeRequest? request;
+
+    // Peek at the raw JSON to distinguish a response from a request without
+    // forcing a full parse twice. A response has `id` but no `method`.
+    final dynamic decoded;
     try {
-      request = BridgeRequest.parse(jsonString);
+      decoded = jsonDecode(jsonString);
     } catch (error, stackTrace) {
       debugPrint('[XBridge] Failed to parse bridge message: $error\n$stackTrace');
       return;
     }
+    if (decoded is! Map<String, dynamic>) {
+      debugPrint('[XBridge] Dropping non-object bridge message');
+      return;
+    }
+
+    final hasId = decoded['id'] != null &&
+        '${decoded['id']}'.trim().isNotEmpty;
+    final hasMethod = decoded['method'] != null &&
+        '${decoded['method']}'.trim().isNotEmpty;
+
+    // Response from H5 (id present, method absent) → route to pending completer.
+    if (hasId && !hasMethod) {
+      _completeH5Response(jsonString);
+      return;
+    }
+
+    // Request from H5 → parse and dispatch.
+    BridgeRequest request;
+    try {
+      request = BridgeRequest.parse(jsonString);
+    } catch (error, stackTrace) {
+      debugPrint('[XBridge] Failed to parse bridge request: $error\n$stackTrace');
+      return;
+    }
+
+    final isFireAndForget = request.id == null || request.id!.isEmpty;
 
     try {
       if (!_isAllowed(request)) {
-        try {
-          await transport.reject(
-            request.id,
-            const BridgeError(
-              code: 'BRIDGE_METHOD_FORBIDDEN',
-              message: 'Current page is not allowed to call this bridge method',
-            ),
-          );
-        } catch (e) {
-          debugPrint('[XBridge] Failed to send forbidden reject: $e');
+        if (!isFireAndForget) {
+          try {
+            await transport.reject(
+              request.id!,
+              const BridgeError(
+                code: 'BRIDGE_METHOD_FORBIDDEN',
+                message: 'Current page is not allowed to call this bridge method',
+              ),
+            );
+          } catch (e) {
+            debugPrint('[XBridge] Failed to send forbidden reject: $e');
+          }
         }
         return;
       }
@@ -139,13 +260,17 @@ class BridgeController {
       } else {
         result = await FallbackChannel.instance.invoke(request.method, request.params);
       }
-      await transport.resolve(request.id, result);
+      if (!isFireAndForget) {
+        await transport.resolve(request.id!, result);
+      }
     } catch (error, stackTrace) {
       debugPrint('[XBridge] Handler ${request.method} failed: $error\n$stackTrace');
-      try {
-        await transport.reject(request.id, BridgeError.from(error));
-      } catch (e) {
-        debugPrint('[XBridge] Failed to send error reject: $e');
+      if (!isFireAndForget) {
+        try {
+          await transport.reject(request.id!, BridgeError.from(error));
+        } catch (e) {
+          debugPrint('[XBridge] Failed to send error reject: $e');
+        }
       }
     }
   }
@@ -225,4 +350,8 @@ class _WebViewControllerTransport implements BridgeTransport {
   @override
   Future<void> dispatchEvent(BridgeEvent event) =>
       BridgeJavaScriptTransport.dispatchEvent(_controller, event);
+
+  @override
+  Future<void> callH5Handler(String id, String method, dynamic params) =>
+      BridgeJavaScriptTransport.callH5Handler(_controller, id, method, params);
 }

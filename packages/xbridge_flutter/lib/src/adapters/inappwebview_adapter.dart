@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../bridge_controller.dart';
@@ -97,8 +99,26 @@ class _InAppWebViewTransport implements BridgeTransport {
 
   @override
   Future<void> dispatchEvent(BridgeEvent event) {
-    final script = 'window.dispatchEvent(new CustomEvent(${BridgeJavaScriptTransport.safeJsonEncode(event.method)},'
-        '{detail:${BridgeJavaScriptTransport.safeJsonEncode(event.params)}}));';
+    final detail = <String, dynamic>{
+      'actionType': event.method,
+      'params': event.params,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    final script = 'window.dispatchEvent(new CustomEvent(${BridgeJavaScriptTransport.safeJsonEncode('YashiAppEvent')},'
+        '{detail:${BridgeJavaScriptTransport.safeJsonEncode(detail)}}));';
+    return _controller.evaluateJavascript(source: script);
+  }
+
+  @override
+  Future<void> callH5Handler(String id, String method, dynamic params) {
+    final request = <String, dynamic>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      if (params != null) 'params': params,
+    };
+    final script = 'window.__XBridgeInbound__'
+        '&&window.__XBridgeInbound__(${BridgeJavaScriptTransport.safeJsonEncode(jsonEncode(request))});';
     return _controller.evaluateJavascript(source: script);
   }
 }

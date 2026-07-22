@@ -28,8 +28,15 @@ import { XBRIDGE_PROTOCOL_VERSION } from "../types.js";
 /** Event listener signature for {@link XBridgeCore.onEvent}. */
 export type XBridgeEventListener = (params: unknown) => void;
 
+/** Handler signature for Native→H5 RPC calls. */
+export type XBridgeHandler = (params: unknown) => unknown | Promise<unknown>;
+
 function isResponse(msg: XBridgeMessage): msg is XBridgeResponse {
   return typeof (msg as XBridgeResponse).id === "string" && typeof (msg as XBridgeEvent).method !== "string";
+}
+
+function isInboundRequest(msg: XBridgeMessage): msg is XBridgeRequest {
+  return typeof (msg as XBridgeRequest).id === "string" && typeof (msg as XBridgeRequest).method === "string";
 }
 
 /**
@@ -40,6 +47,7 @@ function isResponse(msg: XBridgeMessage): msg is XBridgeResponse {
 export class XBridgeCore {
   private readonly dispatcher = new Dispatcher();
   private readonly events: Map<string, Set<XBridgeEventListener>> = new Map();
+  private readonly handlers: Map<string, XBridgeHandler> = new Map();
   private readonly adapter: IXBridgeAdapter;
   private readonly syncAdapter: ISyncAdapter | undefined;
   private messageHandlerBound = false;
@@ -163,10 +171,28 @@ export class XBridgeCore {
     };
   }
 
-  /** Tear down: cancel all pending requests and drop event listeners. */
+  /**
+   * Register a handler for Native→H5 RPC calls. When the host sends a request
+   * with both `id` and `method`, the handler is invoked and its return value
+   * (or thrown error) is sent back as a JSON-RPC response.
+   *
+   * Returns an unregister function (same pattern as {@link onEvent}).
+   */
+  registerHandler(method: string, handler: XBridgeHandler): () => void {
+    this.handlers.set(method, handler);
+    return (): void => {
+      // Only delete if still the same handler — avoids removing a replacement.
+      if (this.handlers.get(method) === handler) {
+        this.handlers.delete(method);
+      }
+    };
+  }
+
+  /** Tear down: cancel all pending requests, drop listeners and handlers. */
   dispose(): void {
     this.dispatcher.clear();
     this.events.clear();
+    this.handlers.clear();
   }
 
   // ---------------------------------------------------------------------
@@ -232,6 +258,15 @@ export class XBridgeCore {
       return;
     }
 
+    // Inbound request from Native: `id` is a string AND `method` is a string.
+    // Look up a registered handler, invoke it, and send back a JSON-RPC
+    // response with the same `id`.
+    if (isInboundRequest(msg)) {
+      const request = msg as XBridgeRequest;
+      this.handleInboundRequest(request);
+      return;
+    }
+
     // No `id` but has `method` ⇒ host-pushed event.
     const evt = msg as XBridgeEvent;
     if (typeof evt.method === "string") {
@@ -252,6 +287,60 @@ export class XBridgeCore {
         if (typeof console !== "undefined") {
           console.warn(`[XBridge] event listener for '${method}' threw:`, err);
         }
+      }
+    }
+  }
+
+  /**
+   * Handle an inbound JSON-RPC request from the Native host. Invokes the
+   * registered handler (if any) and sends back a success or error response
+   * with the same correlation `id`. When no handler is registered, a
+   * `-32601 Method not found` error is returned.
+   */
+  private handleInboundRequest(request: XBridgeRequest): void {
+    const id = request.id as string;
+    const handler = this.handlers.get(request.method);
+    if (handler === undefined) {
+      this.sendInboundResponse(id, undefined, {
+        code: -32601,
+        message: "Method not found",
+      });
+      return;
+    }
+    // Invoke handler and send response. The handler may be sync or async.
+    Promise.resolve()
+      .then((): unknown => handler(request.params))
+      .then(
+        (result: unknown): void => {
+          this.sendInboundResponse(id, result, undefined);
+        },
+        (err: unknown): void => {
+          this.sendInboundResponse(id, undefined, {
+            code: -32000,
+            message: typeof err === "string" ? err : (err as { message?: string })?.message ?? "Handler error",
+            data: err,
+          });
+        },
+      );
+  }
+
+  /** Serialize and send a JSON-RPC response back to the Native host. */
+  private sendInboundResponse(
+    id: string,
+    result: unknown,
+    error: XBridgeError | undefined,
+  ): void {
+    const response: XBridgeResponse = {
+      jsonrpc: XBRIDGE_PROTOCOL_VERSION,
+      id,
+      result,
+      error,
+    };
+    try {
+      this.adapter.send(JSON.stringify(response));
+    } catch (err) {
+      if (typeof console !== "undefined") {
+        console.warn("[XBridge] failed to send inbound response:", err);
       }
     }
   }

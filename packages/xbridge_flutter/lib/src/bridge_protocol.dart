@@ -9,7 +9,7 @@ import 'dart:convert';
 /// absence of the `jsonrpc` marker — only `id` and `method` are required.
 class BridgeRequest {
   BridgeRequest({
-    required this.id,
+    this.id,
     required this.method,
     this.params,
   });
@@ -17,7 +17,8 @@ class BridgeRequest {
   /// Parses [message] (a JSON string) into a [BridgeRequest].
   ///
   /// Throws [FormatException] when the payload is not a JSON object, or when
-  /// `id`/`method` are missing or empty.
+  /// `method` is missing or empty. A missing or empty `id` is accepted — it
+  /// denotes a fire-and-forget call (no response expected).
   factory BridgeRequest.parse(String message) {
     final dynamic payload;
     try {
@@ -28,16 +29,22 @@ class BridgeRequest {
     if (payload is! Map<String, dynamic>) {
       throw const FormatException('Bridge payload must be a JSON object');
     }
-    final id = '${payload['id'] ?? ''}'.trim();
+    final rawId = payload['id'];
+    final id = (rawId == null) ? null : '$rawId'.trim();
     final method = '${payload['method'] ?? ''}'.trim();
-    if (id.isEmpty || method.isEmpty) {
-      throw const FormatException('Bridge payload requires non-empty id and method');
+    if (method.isEmpty) {
+      throw const FormatException('Bridge payload requires a non-empty method');
     }
-    return BridgeRequest(id: id, method: method, params: payload['params']);
+    return BridgeRequest(
+      id: (id == null || id.isEmpty) ? null : id,
+      method: method,
+      params: payload['params'],
+    );
   }
 
-  /// Correlates the request with its response. UUID on the H5 side.
-  final String id;
+  /// Correlates the request with its response. `null` for fire-and-forget
+  /// calls where no response is expected.
+  final String? id;
 
   /// The method name to route to a registered handler.
   final String method;
@@ -106,19 +113,54 @@ class BridgeError {
 /// `{"jsonrpc":"2.0","id":"<id>","error":{...}}` on failure. Exactly one of
 /// [result]/[error] is non-null.
 class BridgeResponse {
-  BridgeResponse({required this.id, this.result, this.error});
+  BridgeResponse({this.id, this.result, this.error});
 
   /// Builds a success response carrying [result].
-  factory BridgeResponse.success({required String id, dynamic result}) {
+  factory BridgeResponse.success({String? id, dynamic result}) {
     return BridgeResponse(id: id, result: result);
   }
 
   /// Builds an error response carrying [error].
-  factory BridgeResponse.error({required String id, required BridgeError error}) {
+  factory BridgeResponse.error({String? id, required BridgeError error}) {
     return BridgeResponse(id: id, error: error);
   }
 
-  final String id;
+  /// Parses [message] (a JSON string) into a [BridgeResponse].
+  ///
+  /// Throws [FormatException] when the payload is not a JSON object or when
+  /// `id` is missing (a response without an id is uncorrelatable and useless).
+  factory BridgeResponse.parse(String message) {
+    final dynamic payload;
+    try {
+      payload = jsonDecode(message);
+    } catch (error) {
+      throw FormatException('Bridge response is not valid JSON: $error');
+    }
+    if (payload is! Map<String, dynamic>) {
+      throw const FormatException('Bridge response must be a JSON object');
+    }
+    final rawId = payload['id'];
+    final id = (rawId == null) ? null : '$rawId'.trim();
+    if (id == null || id.isEmpty) {
+      throw const FormatException('Bridge response requires a non-empty id');
+    }
+    final rawError = payload['error'];
+    BridgeError? error;
+    if (rawError != null) {
+      if (rawError is Map<String, dynamic>) {
+        error = BridgeError(
+          code: '${rawError['code'] ?? 'BRIDGE_ERROR'}',
+          message: '${rawError['message'] ?? ''}',
+          detail: rawError['data'],
+        );
+      } else {
+        error = BridgeError(message: '$rawError');
+      }
+    }
+    return BridgeResponse(id: id, result: payload['result'], error: error);
+  }
+
+  final String? id;
   final dynamic result;
   final BridgeError? error;
 

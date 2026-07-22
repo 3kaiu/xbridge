@@ -33,6 +33,7 @@ interface AppBridgeGlobal {
 interface WindowWithAppBridge {
   AppBridge?: { postMessage: (message: string) => void };
   __YASHI_APP_BRIDGE__?: AppBridgeGlobal;
+  __XBridgeInbound__?: (raw: string) => void;
   addEventListener?: (
     type: string,
     listener: (event: unknown) => void,
@@ -155,6 +156,15 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
       };
       w.addEventListener("YashiAppEvent", this.eventListener);
     }
+
+    // Install the inbound global for Native→H5 requests. The Native host
+    // injects `window.__XBridgeInbound__(rawJson)` to send a JSON-RPC request
+    // (with both `id` and `method`) to the H5 side; the core's `handleRaw`
+    // looks up a registered handler and sends back a response via
+    // `adapter.send()` (which calls `AppBridge.postMessage`).
+    w.__XBridgeInbound__ = (raw: string): void => {
+      self.inbound?.(raw);
+    };
   }
 
   /**
@@ -185,6 +195,9 @@ export class AppBridgeAdapter implements IXBridgeAdapter {
           delete existing.reject;
         }
       }
+      // Remove the inbound global we installed.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (w as any).__XBridgeInbound__;
     }
     this.eventListener = undefined;
     this.patchedResolve = undefined;

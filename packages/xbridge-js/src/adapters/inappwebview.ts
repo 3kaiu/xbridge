@@ -37,6 +37,7 @@ interface InAppWebViewGlobal {
 interface WindowWithInAppWebView {
   flutter_inappwebview?: InAppWebViewGlobal;
   __XBridgeDispatch__?: (raw: string) => void;
+  __XBridgeInbound__?: (raw: string) => void;
 }
 
 function getWindow(): WindowWithInAppWebView | undefined {
@@ -135,6 +136,14 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
     }
 
     this.dispatchFn = w.__XBridgeDispatch__;
+
+    // Install the inbound global for Native→H5 requests. The Native host
+    // injects `window.__XBridgeInbound__(rawJson)` to send a JSON-RPC request
+    // to the H5 side; the core's `handleRaw` looks up a registered handler
+    // and sends back a response via `adapter.send()`.
+    w.__XBridgeInbound__ = (raw: string): void => {
+      captured(raw);
+    };
   }
 
   destroy(): void {
@@ -149,6 +158,9 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         delete (w as any)[XBRIDGE_DISPATCH_GLOBAL];
       }
+      // Remove the inbound global we installed.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (w as any).__XBridgeInbound__;
     }
     this.dispatchFn = undefined;
   }
