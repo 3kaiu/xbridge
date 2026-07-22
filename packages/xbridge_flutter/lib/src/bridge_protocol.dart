@@ -26,6 +26,14 @@ class BridgeRequest {
     } catch (error) {
       throw FormatException('Bridge payload is not valid JSON: $error');
     }
+    return BridgeRequest.fromMap(payload);
+  }
+
+  /// Builds a [BridgeRequest] from an already JSON-decoded [Map].
+  ///
+  /// Use this when the message was already decoded by the router to avoid
+  /// a redundant second `jsonDecode` pass (PRD §3.4 single-decode path).
+  factory BridgeRequest.fromMap(dynamic payload) {
     if (payload is! Map<String, dynamic>) {
       throw const FormatException('Bridge payload must be a JSON object');
     }
@@ -136,6 +144,11 @@ class BridgeResponse {
     } catch (error) {
       throw FormatException('Bridge response is not valid JSON: $error');
     }
+    return BridgeResponse.fromMap(payload);
+  }
+
+  /// Builds a [BridgeResponse] from an already JSON-decoded [Map].
+  factory BridgeResponse.fromMap(dynamic payload) {
     if (payload is! Map<String, dynamic>) {
       throw const FormatException('Bridge response must be a JSON object');
     }

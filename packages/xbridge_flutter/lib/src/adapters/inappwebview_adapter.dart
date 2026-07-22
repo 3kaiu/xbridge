@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../bridge_controller.dart';
@@ -64,6 +62,20 @@ class InAppWebViewBridgeAdapter {
     }).catchError((_) {});
   }
 
+  /// Removes the JavaScript handler registered by [attach] and clears the
+  /// bridge's transport and origin references. Call this when the
+  /// InAppWebView is being disposed to prevent leaked callbacks.
+  void detach(
+    InAppWebViewController controller,
+    BridgeController bridge, {
+    String handlerName = 'XBridge',
+  }) {
+    controller.removeJavaScriptHandler(handlerName: handlerName);
+    bridge
+      ..setTransport(_NullTransport())
+      ..setCurrentOrigin(null);
+  }
+
   static const String _bootstrapScript = ''
       'window.__XBridge__=window.__XBridge__||{'
       'resolve:function(){},'
@@ -118,7 +130,20 @@ class _InAppWebViewTransport implements BridgeTransport {
       if (params != null) 'params': params,
     };
     final script = 'window.__XBridgeInbound__'
-        '&&window.__XBridgeInbound__(${BridgeJavaScriptTransport.safeJsonEncode(jsonEncode(request))});';
+        '&&window.__XBridgeInbound__(${BridgeJavaScriptTransport.safeJsonEncode(request)});';
     return _controller.evaluateJavascript(source: script);
   }
+}
+
+/// A no-op [BridgeTransport] used as a sentinel after [InAppWebViewBridgeAdapter.detach]
+/// so that stale calls don't throw but are silently dropped.
+class _NullTransport implements BridgeTransport {
+  @override
+  Future<void> resolve(String id, dynamic result) async {}
+  @override
+  Future<void> reject(String id, BridgeError error) async {}
+  @override
+  Future<void> dispatchEvent(BridgeEvent event) async {}
+  @override
+  Future<void> callH5Handler(String id, String method, dynamic params) async {}
 }

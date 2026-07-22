@@ -55,11 +55,15 @@ public struct XBridgeSecurityPolicy {
 
     /// Check if the given origin is allowed by this policy.
     ///
-    /// - Parameter origin: The origin string (e.g. `"https://app.example.com"`).
+    /// - Parameter origin: The origin string (e.g. `"https://app.example.com"`),
+    ///   or `nil` when the origin is unknown. `nil` is always rejected.
     /// - Returns: `true` if the origin is permitted.
-    public func allows(origin: String) -> Bool {
+    public func allows(origin: String?) -> Bool {
         if allowAll {
             return true
+        }
+        guard let origin = origin else {
+            return false
         }
         return allowedOrigins.contains(origin)
     }

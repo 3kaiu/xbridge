@@ -120,7 +120,12 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
     if (priorIsOurs) {
       // Replace the same-class install — no chaining needed.
       (dispatch as unknown as { [key: symbol]: unknown })[ownership] = true;
-      w.__XBridgeInbound__ = dispatch;
+      Object.defineProperty(w, "__XBridgeInbound__", {
+        value: dispatch,
+        writable: false,
+        configurable: false,
+        enumerable: false,
+      });
     } else if (typeof prior === "function") {
       // Chain behind a different-class prior install for brownfield coexistence.
       const chained = (raw: string): void => {
@@ -128,10 +133,20 @@ export class InAppWebViewAdapter implements IXBridgeAdapter {
         prior(raw);
       };
       (chained as unknown as { [key: symbol]: unknown })[ownership] = true;
-      w.__XBridgeInbound__ = chained;
+      Object.defineProperty(w, "__XBridgeInbound__", {
+        value: chained,
+        writable: false,
+        configurable: false,
+        enumerable: false,
+      });
     } else {
       (dispatch as unknown as { [key: symbol]: unknown })[ownership] = true;
-      w.__XBridgeInbound__ = dispatch;
+      Object.defineProperty(w, "__XBridgeInbound__", {
+        value: dispatch,
+        writable: false,
+        configurable: false,
+        enumerable: false,
+      });
     }
 
     this.dispatchFn = w.__XBridgeInbound__;

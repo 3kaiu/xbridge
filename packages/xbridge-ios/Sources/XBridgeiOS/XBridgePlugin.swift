@@ -37,6 +37,11 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
     /// the Flutter side via `WebViewBridgePolicy`).
     public var securityPolicy: XBridgeSecurityPolicy = .allowAll()
 
+    /// The current page origin, set by the host app when it observes
+    /// navigation. Used for defense-in-depth security checks on the
+    /// MethodChannel path.
+    public var origin: String?
+
     /// The FlutterMethodChannel bound to this plugin instance.
     private var channel: FlutterMethodChannel?
 
@@ -100,6 +105,18 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
         }
 
         let params = call.arguments
+
+        // Security policy check (defense-in-depth — the primary gate is on
+        // the Flutter side, but verify here too so a direct native call
+        // through the MethodChannel is also origin-checked).
+        if !securityPolicy.allows(origin: origin) {
+            result(FlutterError(
+                code: "ORIGIN_NOT_ALLOWED",
+                message: "Origin '\(origin ?? "nil")' is not permitted by the security policy",
+                details: nil
+            ))
+            return
+        }
 
         // Dispatch to main thread if the delegate requires it.
         // We call directly if already on main; otherwise dispatch async.

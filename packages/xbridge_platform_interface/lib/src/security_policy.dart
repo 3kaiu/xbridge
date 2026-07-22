@@ -6,9 +6,12 @@
 /// local WebSocket server (origin check) as well as the native fallback route.
 class XBridgeSecurityPolicy {
   XBridgeSecurityPolicy({
-    required this.allowedOrigins,
+    required Set<String> allowedOrigins,
     required this.allowAll,
-  });
+  })  : allowedOrigins = allowedOrigins,
+        _normalizedAllowed = allowAll
+            ? <String>{}
+            : allowedOrigins.map(_normalizeOrigin).toSet();
 
   /// Allow every origin — convenient for development, never use in production.
   factory XBridgeSecurityPolicy.allowAll() {
@@ -21,13 +24,17 @@ class XBridgeSecurityPolicy {
   /// Only allow the listed origins (scheme + host [+ port]).
   factory XBridgeSecurityPolicy.allowlist(Set<String> origins) {
     return XBridgeSecurityPolicy(
-      allowedOrigins: origins.toSet(),
+      allowedOrigins: origins,
       allowAll: false,
     );
   }
 
-  /// Explicit allowlist. Ignored when [allowAll] is `true`.
+  /// The raw allowlist as passed to the constructor. Pre-normalized set
+  /// is in [_normalizedAllowed] for O(1) lookup. Ignored when [allowAll].
   final Set<String> allowedOrigins;
+
+  /// Pre-normalized allowlist for O(1) [allows] checks.
+  final Set<String> _normalizedAllowed;
 
   /// When `true`, every origin is accepted and [allowedOrigins] is ignored.
   final bool allowAll;
@@ -44,13 +51,7 @@ class XBridgeSecurityPolicy {
     if (origin.isEmpty) {
       return false;
     }
-    final normalized = _normalizeOrigin(origin);
-    for (final allowed in allowedOrigins) {
-      if (_normalizeOrigin(allowed) == normalized) {
-        return true;
-      }
-    }
-    return false;
+    return _normalizedAllowed.contains(_normalizeOrigin(origin));
   }
 
   static String _normalizeOrigin(String origin) {

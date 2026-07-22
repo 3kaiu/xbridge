@@ -46,7 +46,7 @@ class XBridgeSyncInterface(
 
     companion object {
         private const val TAG = "XBridgeSync"
-        private const val SYNC_TIMEOUT_SECONDS = 5L
+        private const val SYNC_TIMEOUT_SECONDS = 3L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())

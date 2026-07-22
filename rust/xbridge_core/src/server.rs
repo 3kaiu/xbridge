@@ -80,9 +80,10 @@ impl LocalWsServer {
         let sink_capacity = self.sink_capacity;
         let allow_missing_origin = self.allow_missing_origin;
         let handler = Arc::new(self.build_handler(Arc::clone(&registry)));
-        let allowed_origins = self
-            .allowed_origins
-            .unwrap_or_else(default_allowed_origins);
+        let allowed_origins = Arc::new(
+            self.allowed_origins
+                .unwrap_or_else(default_allowed_origins),
+        );
 
         let shutdown_notify = Arc::new(tokio::sync::Notify::new());
         let shutdown_for_task = Arc::clone(&shutdown_notify);
@@ -134,13 +135,13 @@ impl LocalWsServer {
 
                         let cnt = Arc::clone(&conn_counter);
                         let h = Arc::clone(&handler);
-                        let origins = allowed_origins.clone();
+                        let origins = Arc::clone(&allowed_origins);
                         let allow_missing = allow_missing_origin;
 
                         tasks.spawn(async move {
                             // Decrement counter on exit via RAII guard.
                             let _guard = ConnGuard(cnt);
-                            match upgrade_handshake(stream, &origins, allow_missing).await {
+                            match upgrade_handshake(stream, origins, allow_missing).await {
                                 Ok(ws_stream) => {
                                     handle_connection(ws_stream, h).await;
                                 }
@@ -274,11 +275,11 @@ fn default_allowed_origins() -> Vec<String> {
 /// upgrade completes.
 async fn upgrade_handshake(
     stream: TcpStream,
-    allowed: &[String],
+    allowed: Arc<Vec<String>>,
     allow_missing_origin: bool,
 ) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>, WsError> {
     let cb = OriginCallback {
-        allowed: allowed.to_vec(),
+        allowed,
         allow_missing_origin,
     };
     let ws = tokio_tungstenite::accept_hdr_async(stream, cb).await?;
@@ -290,7 +291,7 @@ async fn upgrade_handshake(
 /// higher-ranked lifetime bound on `&Request` — closures that capture by move
 /// pin a specific lifetime and fail HRTB inference.
 struct OriginCallback {
-    allowed: Vec<String>,
+    allowed: Arc<Vec<String>>,
     allow_missing_origin: bool,
 }
 
@@ -312,6 +313,7 @@ impl tokio_tungstenite::tungstenite::handshake::server::Callback for OriginCallb
 /// allowed; tungstenite then aborts the handshake and the TCP socket is
 /// dropped. On success returns `Ok(response)` with the (possibly amended)
 /// upgrade response.
+#[allow(clippy::result_large_err)]
 fn check_origin(
     req: &Request,
     resp: Response,
@@ -333,8 +335,6 @@ fn check_origin(
                 allowed.iter().any(|a| {
                     if a.ends_with('/') {
                         o.starts_with(a.as_str())
-                    } else if a == "*" {
-                        true
                     } else {
                         o == a
                             || o.starts_with(&format!("{a}/"))

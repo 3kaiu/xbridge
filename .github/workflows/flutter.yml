@@ -29,7 +29,11 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install dependencies
+      - name: Install dependencies (xbridge_flutter)
+        run: flutter pub get
+
+      - name: Install dependencies (xbridge_platform_interface)
+        working-directory: packages/xbridge_platform_interface
         run: flutter pub get
 
       - name: Analyze xbridge_flutter
@@ -37,9 +41,16 @@ jobs:
 
       - name: Analyze platform interface
         working-directory: packages/xbridge_platform_interface
-        run: |
-          flutter pub get
-          dart analyze
+        run: dart analyze
+
+      - name: Run tests (xbridge_flutter)
+        run: flutter test
+        continue-on-error: true
+
+      - name: Run tests (xbridge_platform_interface)
+        working-directory: packages/xbridge_platform_interface
+        run: flutter test
+        continue-on-error: true
 
       - name: Dry-run pub publish
         run: flutter pub publish --dry-run

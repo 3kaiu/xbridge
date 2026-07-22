@@ -66,6 +66,7 @@ export class FlutterChannelAdapter implements IXBridgeAdapter {
   private inbound: ((raw: string) => void) | undefined;
   private installed = false;
   private eventListener: ((event: unknown) => void) | undefined;
+  private inboundFn: ((raw: string) => void) | undefined;
   private patchedResolve: ((id: string, result?: unknown) => void) | undefined;
   private patchedReject: ((id: string, error?: unknown) => void) | undefined;
   private priorResolve: ((id: string, result?: unknown) => void) | undefined;
@@ -182,9 +183,15 @@ export class FlutterChannelAdapter implements IXBridgeAdapter {
     // (with both `id` and `method`) to the H5 side; the core's `handleRaw`
     // looks up a registered handler and sends back a response via
     // `adapter.send()` (which calls `XBridge.postMessage`).
-    w.__XBridgeInbound__ = (raw: string): void => {
+    this.inboundFn = (raw: string): void => {
       self.inbound?.(raw);
     };
+    Object.defineProperty(w, "__XBridgeInbound__", {
+      value: this.inboundFn,
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
   }
 
   /**
@@ -215,9 +222,15 @@ export class FlutterChannelAdapter implements IXBridgeAdapter {
           delete existing.reject;
         }
       }
-      // Remove the inbound global we installed.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      delete (w as any).__XBridgeInbound__;
+      // Remove the inbound global only if we still own it (hasn't been
+      // replaced by another adapter). Since it was installed via
+      // defineProperty(configurable:false), we can't delete it — but we
+      // can nullify the handler so calls become no-ops.
+      if (this.inboundFn !== undefined && w.__XBridgeInbound__ === this.inboundFn) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        try { delete (w as any).__XBridgeInbound__; } catch { /* non-configurable — no-op fallback */ }
+      }
+      this.inboundFn = undefined;
     }
     this.eventListener = undefined;
     this.patchedResolve = undefined;
@@ -238,7 +251,16 @@ export class FlutterChannelAdapter implements IXBridgeAdapter {
       id,
     };
     if (isError) {
-      response["error"] = error;
+      // Normalize error into a well-formed XBridgeError so the core's
+      // reject path doesn't bury the original message in `data`.
+      response["error"] =
+        error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string"
+          ? error
+          : {
+              code: -32000,
+              message: typeof error === "string" ? error : "Host error",
+              data: error,
+            };
     } else {
       response["result"] = result;
     }
