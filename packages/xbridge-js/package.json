@@ -1,0 +1,28 @@
+{
+  "name": "xbridge-js",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "description": "Open-source, zero-business-coupling cross-platform bridge SDK for H5.",
+  "keywords": [
+    "bridge",
+    "webview",
+    "json-rpc",
+    "cross-platform",
+    "h5"
+  ],
+  "license": "MIT",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

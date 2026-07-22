@@ -1,0 +1,24 @@
+[package]
+name = "xbridge_core"
+version = "0.1.0"
+edition = "2021"
+description = "XBridge local WebSocket server — high-perf streaming bypass for cross-platform bridge SDK"
+license = "MIT"
+repository = "https://github.com/xbridge/xbridge"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+env_logger = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["connect"] }

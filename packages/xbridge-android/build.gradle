@@ -1,0 +1,59 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+// ── Maven distribution metadata ──────────────────────────────────────────────
+// Consumers add:
+//   implementation 'io.xbridge:xbridge-android:0.1.0'
+// to their app-level build.gradle.
+group = 'io.xbridge'
+version = '0.1.0'
+
+android {
+    namespace 'io.xbridge'
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 21
+        targetSdk 34
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main {
+            // Native .so libraries (libxbridge_core.so) are placed by the
+            // consumer or CI into src/main/jniLibs/<abi>/. See README.
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    // Flutter embedding — provided by the host app at runtime via the
+    // Flutter SDK's local Maven repository (download.flutter.io). We declare
+    // compileOnly so the library compiles standalone, but the actual artifact
+    // is resolved by the consumer's Flutter Gradle tooling.
+    //
+    // NOTE: The version hash below corresponds to a specific Flutter engine
+    // build. When the consumer's Flutter SDK uses a different engine version,
+    // they should override this in their app's build.gradle or add the
+    // correct flutter_embedding_debug/release dependency themselves.
+    // See: https://docs.flutter.dev/add-to-app/android/project-setup
+    compileOnly 'io.flutter:flutter_embedding_debug:1.0.0-dbed2c7f7ee5fe5a437f5c5418e5a25d0611d7a8'
+    // AndroidX annotations — minimal, no transitive bloat.
+    compileOnly 'androidx.annotation:annotation:1.7.1'
+}

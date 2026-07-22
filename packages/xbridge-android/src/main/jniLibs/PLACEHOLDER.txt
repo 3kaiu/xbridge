@@ -1,0 +1,23 @@
+# This directory holds the Rust `libxbridge_core.so` native library for each
+# target ABI.
+#
+# Expected layout:
+#   jniLibs/
+#   ├── arm64-v8a/
+#   │   └── libxbridge_core.so
+#   ├── armeabi-v7a/
+#   │   └── libxbridge_core.so
+#   └── x86_64/
+#       └── libxbridge_core.so
+#
+# The .so files are NOT checked into the repository. They are built from the
+# Rust crate at `rust/xbridge_core/` using `cargo build --release` with the
+# appropriate `--target` triple, then copied here by CI or the developer.
+#
+# If the .so files are absent, the SDK degrades gracefully:
+#   - LocalWsServerJni.start() returns -1
+#   - LocalWsServerJni.stop() returns -1
+#   - A warning is logged
+#   - All other features (fallback receiver, sync bypass) work normally.
+#
+# See the README.md at the package root for build instructions.

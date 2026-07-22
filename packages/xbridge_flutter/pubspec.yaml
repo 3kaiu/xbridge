@@ -1,0 +1,25 @@
+name: xbridge_flutter
+description: A generic, business-free cross-platform bridge SDK for Flutter WebView H5 integration.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  xbridge_platform_interface:
+    path: ../xbridge_platform_interface
+  # Both WebView engines are regular dependencies so the adapter types resolve
+  # at compile time. They are "optional" in the sense that an app only needs to
+  # *use* (attach) the adapter matching its engine — the other adapter simply
+  # never receives traffic. Keeping both as deps avoids conditional-import
+  # gymnastics and matches the federated-plugin convention.
+  webview_flutter: ^4.0.0
+  flutter_inappwebview: ^6.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
