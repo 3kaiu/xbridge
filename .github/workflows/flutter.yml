@@ -36,7 +36,9 @@ jobs:
 
       - name: Analyze platform interface
         working-directory: packages/xbridge_platform_interface
-        run: dart analyze
+        run: |
+          flutter pub get
+          dart analyze
 
       - name: Dry-run pub publish
         run: flutter pub publish --dry-run
