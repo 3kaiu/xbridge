@@ -9,7 +9,7 @@
 import Foundation
 
 /// A generic delegate protocol that the host app implements to forward
-/// XBridge fallback calls to its existing bridge handler (e.g. DsBridge).
+/// XBridge fallback calls to its existing bridge handler (e.g. your existing native bridge).
 ///
 /// XBridge itself contains zero business logic. The app supplies an
 /// implementation of this protocol that knows how to route `method` strings
@@ -19,8 +19,8 @@ import Foundation
 /// ```swift
 /// class MyBridgeAdapter: XBridgeNativeBridge {
 ///     func invoke(method: String, params: Any?) -> Any? {
-///         // Forward to your existing DsBridge / YashiBridgePlugin handler
-///         return existingDsBridge.call(method, args: params)
+///         // Forward to your existing bridge plugin handler
+///         return existingBridge.call(method, args: params)
 ///     }
 /// }
 /// ```

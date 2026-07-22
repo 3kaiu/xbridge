@@ -103,7 +103,7 @@ The data plane (binary frames) flows H5 ↔ native WS directly — no Base64, no
 
 ## Zero business coupling
 
-This package contains no business logic (no `getToken`, `YashiApi`, `PaymentService`, etc.). Platform channel names (`AppBridge`, `humanBridge`, `dsbridge`, `flutter_inappwebview`) are transport-level and do not constitute business coupling.
+This package contains no business logic (no `getToken`, `PaymentService`, etc.). Platform channel names (`flutter_inappwebview`) are transport-level and do not constitute business coupling.
 
 ## License
 

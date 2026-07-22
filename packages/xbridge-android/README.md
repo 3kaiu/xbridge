@@ -7,7 +7,7 @@ protocol to the native Android WebView and legacy bridge plugins.
 
 1. **Fallback receiver** — Receives unregistered method calls forwarded from
    the Flutter `BridgeController` via `MethodChannel('xbridge/native_fallback')`
-   and routes them to your existing native bridge (e.g. DsBridge).
+   and routes them to your existing native bridge.
 2. **Sync bypass injection** — Injects a `@JavascriptInterface` named
    `XBridgeSync` into the WebView so H5 can make truly synchronous native
    calls that bypass the async Flutter channel (audit Risk 1).

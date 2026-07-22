@@ -11,10 +11,10 @@ import 'bridge_protocol.dart';
 /// repeated serialization passes (PRD §3.4 sub-ms target).
 ///
 /// The injected scripts target the existing H5 contract:
-/// * `window.__YASHI_APP_BRIDGE__.resolve(id, result)` /
-///   `window.__YASHI_APP_BRIDGE__.reject(id, error)` — Promise settle callbacks
-///   installed by `xbridge-js` (and the legacy `AppBridgeAdapter`).
-/// * `window.dispatchEvent(new CustomEvent('YashiAppEvent', {detail}))` — the
+/// * `window.__XBridge__.resolve(id, result)` /
+///   `window.__XBridge__.reject(id, error)` — Promise settle callbacks
+///   installed by `xbridge-js` (and the legacy `FlutterChannelAdapter`).
+/// * `window.dispatchEvent(new CustomEvent('XBridgeEvent', {detail}))` — the
 ///   host-push event channel consumed by `xbridge-js` `onEvent`.
 class BridgeJavaScriptTransport {
   const BridgeJavaScriptTransport._();
@@ -47,9 +47,9 @@ class BridgeJavaScriptTransport {
     String id,
     dynamic result,
   ) {
-    final script = 'window.__YASHI_APP_BRIDGE__'
-        '&&window.__YASHI_APP_BRIDGE__.resolve'
-        '&&window.__YASHI_APP_BRIDGE__.resolve(${safeJsonEncode(id)},${safeJsonEncode(result)});';
+    final script = 'window.__XBridge__'
+        '&&window.__XBridge__.resolve'
+        '&&window.__XBridge__.resolve(${safeJsonEncode(id)},${safeJsonEncode(result)});';
     return controller.runJavaScript(script);
   }
 
@@ -59,17 +59,17 @@ class BridgeJavaScriptTransport {
     String id,
     dynamic error,
   ) {
-    final script = 'window.__YASHI_APP_BRIDGE__'
-        '&&window.__YASHI_APP_BRIDGE__.reject'
-        '&&window.__YASHI_APP_BRIDGE__.reject(${safeJsonEncode(id)},${safeJsonEncode(error)});';
+    final script = 'window.__XBridge__'
+        '&&window.__XBridge__.reject'
+        '&&window.__XBridge__.reject(${safeJsonEncode(id)},${safeJsonEncode(error)});';
     return controller.runJavaScript(script);
   }
 
-  /// Broadcasts [event] to H5 via a DOM `CustomEvent('YashiAppEvent')`.
+  /// Broadcasts [event] to H5 via a DOM `CustomEvent('XBridgeEvent')`.
   ///
   /// The `detail` payload matches the legacy shape (`{actionType, params,
-  /// timestamp}`) that the H5 `AppBridgeAdapter` expects — it listens for the
-  /// literal `"YashiAppEvent"` event type and routes by `detail.actionType`.
+  /// timestamp}`) that the H5 `FlutterChannelAdapter` expects — it listens for the
+  /// literal `"XBridgeEvent"` event type and routes by `detail.actionType`.
   static Future<void> dispatchEvent(
     WebViewController controller,
     BridgeEvent event,
@@ -79,7 +79,7 @@ class BridgeJavaScriptTransport {
       'params': event.params,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
-    final script = 'window.dispatchEvent(new CustomEvent(${safeJsonEncode('YashiAppEvent')},'
+    final script = 'window.dispatchEvent(new CustomEvent(${safeJsonEncode('XBridgeEvent')},'
         '{detail:${safeJsonEncode(detail)}}));';
     return controller.runJavaScript(script);
   }

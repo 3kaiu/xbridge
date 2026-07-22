@@ -8,14 +8,14 @@
  *
  * Sniff order (first match wins):
  *   1. `window.flutter_inappwebview`  → InAppWebViewAdapter
- *   2. `window.AppBridge`             → AppBridgeAdapter
- *   3. `window.webkit.messageHandlers.humanBridge` → WKBridgeAdapter
- *   4. `window.dsbridge`              → DSBridgeSyncAdapter (sync only, async warns)
+ *   2. `window.XBridge`                → FlutterChannelAdapter
+ *   3. `window.webkit.messageHandlers.XBridgeWK` → WKWebViewAdapter
+ *   4. `window.dsbridge`              → NativeSyncAdapter (sync only, async warns)
  *   5. none                            → NoopAdapter (warns "no bridge environment")
  *
  * When `window.dsbridge` is detected but no async adapter is, it is installed
  * as the sync adapter only — `callSync` works, `call` warns. This matches the
- * brownfield reality that a pure-dsbridge shell has sync semantics and no
+ * brownfield reality that a pure native-sync shell has sync semantics and no
  * JSON-RPC async channel.
  */
 
@@ -23,10 +23,10 @@ import type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
 import { XBridgeCore } from "./core/bridge.js";
 import type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
 import type { XBridgeCallOptions } from "./types.js";
-import { AppBridgeAdapter } from "./adapters/appbridge.js";
-import { DSBridgeSyncAdapter } from "./adapters/dsbridge_sync.js";
+import { FlutterChannelAdapter } from "./adapters/flutter_channel.js";
+import { NativeSyncAdapter } from "./adapters/native_sync.js";
 import { InAppWebViewAdapter } from "./adapters/inappwebview.js";
-import { WKBridgeAdapter } from "./adapters/wkbridge.js";
+import { WKWebViewAdapter } from "./adapters/wkwebview.js";
 
 // Re-export the full public surface.
 export { XBridgeCore } from "./core/bridge.js";
@@ -36,10 +36,10 @@ export type { PendingRequest, TimeoutError } from "./core/dispatcher.js";
 export { generateId } from "./core/id.js";
 export type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
 export {
-  AppBridgeAdapter,
-  WKBridgeAdapter,
+  FlutterChannelAdapter,
+  WKWebViewAdapter,
   InAppWebViewAdapter,
-  DSBridgeSyncAdapter,
+  NativeSyncAdapter,
   XBRIDGE_INAPP_HANDLER_NAME,
   XBRIDGE_DISPATCH_GLOBAL,
 } from "./adapters/index.js";
@@ -91,10 +91,10 @@ class NoopAdapter implements IXBridgeAdapter {
 
 interface WindowForSniff {
   flutter_inappwebview?: unknown;
-  AppBridge?: { postMessage?: unknown };
+  XBridge?: { postMessage?: unknown };
   webkit?: {
     messageHandlers?: {
-      humanBridge?: { postMessage?: unknown };
+      XBridgeWK?: { postMessage?: unknown };
     };
   };
   dsbridge?: { call?: unknown };
@@ -109,9 +109,9 @@ function sniffWindow(): WindowForSniff | undefined {
 /** Cached environment detection booleans — never store adapter instances. */
 interface SniffCache {
   hasInAppWebView: boolean;
-  hasAppBridge: boolean;
-  hasWKBridge: boolean;
-  hasDsBridge: boolean;
+  hasFlutterChannel: boolean;
+  hasWKWebView: boolean;
+  hasNativeSync: boolean;
   warned: boolean;
 }
 
@@ -126,29 +126,29 @@ function detectEnv(): SniffCache {
     w !== undefined &&
     typeof (w as { flutter_inappwebview?: { callHandler?: unknown } }).flutter_inappwebview
       ?.callHandler === "function";
-  const hasAppBridge =
-    w !== undefined && typeof w.AppBridge?.postMessage === "function";
-  const hasWKBridge =
+  const hasFlutterChannel =
+    w !== undefined && typeof w.XBridge?.postMessage === "function";
+  const hasWKWebView =
     w !== undefined &&
-    typeof w.webkit?.messageHandlers?.humanBridge?.postMessage === "function";
-  const hasDsBridge = w !== undefined && typeof w.dsbridge?.call === "function";
+    typeof w.webkit?.messageHandlers?.XBridgeWK?.postMessage === "function";
+  const hasNativeSync = w !== undefined && typeof w.dsbridge?.call === "function";
 
   let warned = false;
-  if (hasDsBridge && !hasInAppWebView && !hasAppBridge && !hasWKBridge) {
+  if (hasNativeSync && !hasInAppWebView && !hasFlutterChannel && !hasWKWebView) {
     warned = true;
     if (typeof console !== "undefined") {
       console.warn(
-        "[XBridge] only dsbridge detected; callSync is available but async call() has no transport.",
+        "[XBridge] only native sync bridge detected; callSync is available but async call() has no transport.",
       );
     }
-  } else if (!hasInAppWebView && !hasAppBridge && !hasWKBridge) {
+  } else if (!hasInAppWebView && !hasFlutterChannel && !hasWKWebView) {
     warned = true;
     if (typeof console !== "undefined") {
       console.warn("[XBridge] no bridge environment detected.");
     }
   }
 
-  sniffCache = { hasInAppWebView, hasAppBridge, hasWKBridge, hasDsBridge, warned };
+  sniffCache = { hasInAppWebView, hasFlutterChannel, hasWKWebView, hasNativeSync, warned };
   return sniffCache;
 }
 
@@ -160,22 +160,22 @@ function pickAdapter(env: SniffCache): IXBridgeAdapter {
   if (env.hasInAppWebView) {
     return new InAppWebViewAdapter();
   }
-  if (env.hasAppBridge) {
-    return new AppBridgeAdapter();
+  if (env.hasFlutterChannel) {
+    return new FlutterChannelAdapter();
   }
-  if (env.hasWKBridge) {
-    return new WKBridgeAdapter();
+  if (env.hasWKWebView) {
+    return new WKWebViewAdapter();
   }
   return new NoopAdapter();
 }
 
 /**
  * Construct a fresh sync adapter from cached env detection. Returns `undefined`
- * when dsbridge is not available.
+ * when no native sync bridge is available.
  */
 function pickSyncAdapter(env: SniffCache): ISyncAdapter | undefined {
-  if (env.hasDsBridge) {
-    return new DSBridgeSyncAdapter();
+  if (env.hasNativeSync) {
+    return new NativeSyncAdapter();
   }
   return undefined;
 }

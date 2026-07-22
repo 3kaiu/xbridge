@@ -24,7 +24,7 @@ import io.xbridge.XBridgeSyncInterface
  * ```
  *
  * The app provides the [XBridgeNativeBridge] implementation that forwards
- * to its existing DsBridge handler — XBridge itself has zero business
+ * to its existing native bridge handler — XBridge itself has zero business
  * coupling.
  *
  * **Note**: This registry holds a static reference to the [XBridgePlugin].
@@ -50,7 +50,7 @@ object XBridgePluginRegistry {
      *
      * @param flutterEngine The Flutter engine to attach to.
      * @param nativeBridge  The app's delegate that forwards to the legacy
-     *                      native bridge (e.g. DsBridge). May be `null` if
+     *                      native bridge (e.g. your existing native bridge). May be `null` if
      *                      the app sets it later via [updateNativeBridge].
      * @param webView       Optional WebView to inject the `XBridgeSync`
      *                      `@JavascriptInterface` into. Pass `null` if the

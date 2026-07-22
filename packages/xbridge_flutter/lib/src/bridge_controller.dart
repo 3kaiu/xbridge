@@ -31,7 +31,7 @@ abstract class BridgeTransport {
 /// * Enforce an optional [XBridgeSecurityPolicy] origin allowlist before
 ///   dispatching.
 /// * Fall back to the native [FallbackChannel] (or an explicit fallback
-///   handler) when no handler matches, so legacy DSBridge methods keep working.
+///   handler) when no handler matches, so legacy native bridge methods keep working.
 /// * Push host events back to H5 via the installed [BridgeTransport].
 ///
 /// The controller is engine-agnostic: adapters ([WebViewFlutterBridgeAdapter],
