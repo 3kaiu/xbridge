@@ -27,6 +27,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -39,8 +41,59 @@ jobs:
         run: cargo test
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
-        continue-on-error: true
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build cdylib
         run: cargo build --release
+
+  # Cross-compile for mobile targets to catch target-specific breakage.
+  cross-compile-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/xbridge_core
+
+      - name: Install cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+
+      - name: Build for aarch64-linux-android
+        working-directory: rust/xbridge_core
+        run: cargo build --release --target aarch64-linux-android
+
+      - name: Build for armv7-linux-androideabi
+        working-directory: rust/xbridge_core
+        run: cargo build --release --target armv7-linux-androideabi
+
+      - name: Build for x86_64-linux-android
+        working-directory: rust/xbridge_core
+        run: cargo build --release --target x86_64-linux-android
+
+  cross-compile-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/xbridge_core
+
+      - name: Build for aarch64-apple-ios
+        working-directory: rust/xbridge_core
+        run: cargo build --release --target aarch64-apple-ios
+
+      - name: Build for x86_64-apple-ios
+        working-directory: rust/xbridge_core
+        run: cargo build --release --target x86_64-apple-ios

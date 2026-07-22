@@ -155,11 +155,12 @@ class BridgeController {
   }
 
   /// Routes an inbound H5 response (id present, method absent) to the
-  /// pending [Completer] registered by [callH5].
-  void _completeH5Response(String jsonString) {
+  /// pending [Completer] registered by [callH5]. Accepts a pre-decoded
+  /// [Map] to avoid a redundant second `jsonDecode` pass.
+  void _completeH5ResponseFromMap(Map<String, dynamic> decoded) {
     final BridgeResponse response;
     try {
-      response = BridgeResponse.parse(jsonString);
+      response = BridgeResponse.fromMap(decoded);
     } catch (error, stackTrace) {
       debugPrint('[XBridge] Failed to parse H5 response: $error\n$stackTrace');
       return;
@@ -179,10 +180,11 @@ class BridgeController {
 
   /// Handles a raw JSON message string from the WebView.
   ///
-  /// Performance path: single [jsonDecode] (inside [BridgeRequest.parse] or
-  /// [BridgeResponse.parse]), single [Map] lookup for the handler or pending
-  /// completer, single [jsonEncode] for the response. Handler invocation is
-  /// awaited but exceptions are swallowed and reported back to H5.
+  /// Performance path: single [jsonDecode] (decoded once, then passed as
+  /// a [Map] to [BridgeRequest.fromMap] / [BridgeResponse.fromMap]), single
+  /// [Map] lookup for the handler or pending completer, single [jsonEncode]
+  /// for the response. Handler invocation is awaited but exceptions are
+  /// swallowed and reported back to H5.
   ///
   /// Routing:
   /// * `id` present, `method` absent → H5 response to a prior `callH5` →
@@ -218,14 +220,14 @@ class BridgeController {
 
     // Response from H5 (id present, method absent) → route to pending completer.
     if (hasId && !hasMethod) {
-      _completeH5Response(jsonString);
+      _completeH5ResponseFromMap(decoded);
       return;
     }
 
     // Request from H5 → parse and dispatch.
     BridgeRequest request;
     try {
-      request = BridgeRequest.parse(jsonString);
+      request = BridgeRequest.fromMap(decoded);
     } catch (error, stackTrace) {
       debugPrint('[XBridge] Failed to parse bridge request: $error\n$stackTrace');
       return;
@@ -254,9 +256,9 @@ class BridgeController {
       final handler = _handlers[request.method];
       final dynamic result;
       if (handler != null) {
-        result = await handler(_buildContext(), request.params);
+        result = await handler(_buildContext(), request.params, request);
       } else if (_fallbackHandler != null) {
-        result = await _fallbackHandler!(_buildContext(), request.params);
+        result = await _fallbackHandler!(_buildContext(), request.params, request);
       } else {
         result = await FallbackChannel.instance.invoke(request.method, request.params);
       }
@@ -331,6 +333,32 @@ class BridgeController {
 
   WebViewController get _detachedControllerOrInit =>
       _detachedController ??= WebViewController();
+
+  /// Tear down: cancel all pending H5 calls (completing them with an error),
+  /// clear handler registrations, and drop transport/controller references.
+  ///
+  /// Must be called when the [BridgeController] is no longer needed —
+  /// typically in the host widget's `dispose()` — to prevent timer leaks
+  /// from pending H5 calls whose responses never arrive.
+  void dispose() {
+    // Complete all pending H5 calls with an error so their timers are
+    // cancelled via the whenComplete handler in [callH5].
+    for (final completer in _pendingH5Calls.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(
+          StateError('[XBridge] BridgeController disposed'),
+        );
+      }
+    }
+    _pendingH5Calls.clear();
+    _handlers.clear();
+    _fallbackHandler = null;
+    _policy = null;
+    _transport = null;
+    _webViewController = null;
+    _detachedController = null;
+    _explicitOrigin = null;
+  }
 }
 
 /// Default [BridgeTransport] backed by a `webview_flutter` [WebViewController].

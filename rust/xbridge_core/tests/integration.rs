@@ -58,7 +58,7 @@ async fn binary_frame_round_trip_no_encoding() {
     // Base64/string conversion happened along the way).
     let payload: Vec<u8> = (0..255).collect::<Vec<u8>>().repeat(4);
     let payload_len = payload.len();
-    ws.send(Message::Binary(payload.clone().into())).await.expect("send");
+    ws.send(Message::Binary(payload.clone())).await.expect("send");
 
     // Wait for the server to deliver the frame to our subscriber.
     let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())

@@ -188,11 +188,13 @@ export class XBridgeCore {
     };
   }
 
-  /** Tear down: cancel all pending requests, drop listeners and handlers. */
+  /** Tear down: cancel all pending requests, drop listeners and handlers,
+   * and destroy the adapter to clean up installed globals and event listeners. */
   dispose(): void {
     this.dispatcher.clear();
     this.events.clear();
     this.handlers.clear();
+    this.adapter.destroy?.();
   }
 
   // ---------------------------------------------------------------------
@@ -238,18 +240,18 @@ export class XBridgeCore {
         // Validate error shape: must be an object with a string `message`.
         // Otherwise wrap as a structured error so downstream reject always
         // receives a well-formed XBridgeError.
-        const raw = response.error;
+        const rawError = response.error;
         if (
-          raw !== null &&
-          typeof raw === "object" &&
-          typeof (raw as { message?: unknown }).message === "string"
+          rawError !== null &&
+          typeof rawError === "object" &&
+          typeof (rawError as { message?: unknown }).message === "string"
         ) {
-          this.dispatcher.reject(response.id, raw as XBridgeError);
+          this.dispatcher.reject(response.id, rawError as XBridgeError);
         } else {
           this.dispatcher.reject(response.id, {
             code: -32000,
             message: "Malformed error from host",
-            data: raw,
+            data: rawError,
           });
         }
       } else {

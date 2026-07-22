@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:webview_flutter/webview_flutter.dart';
 
+import 'bridge_protocol.dart';
+
 /// Context handed to every registered [BridgeMethodHandler].
 ///
 /// Handlers receive the owning [WebViewController] so they can drive the WebView
@@ -29,7 +31,11 @@ class BridgeMethodContext {
 /// resolves synchronously. Throwing is always caught by [BridgeController]
 /// and converted into a [BridgeError] reject response — exceptions never
 /// escape the channel.
+///
+/// The [request] parameter gives handlers access to the full JSON-RPC
+/// envelope (including the correlation id and method name) when needed.
 typedef BridgeMethodHandler = FutureOr<dynamic> Function(
   BridgeMethodContext context,
   dynamic params,
+  BridgeRequest request,
 );

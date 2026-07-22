@@ -11,6 +11,7 @@ use std::io;
 /// `code` is intentionally numeric-friendly so the C-ABI layer can translate
 /// losslessly (see [`crate::bridge`]).
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::result_large_err)]
 pub enum WsError {
     /// Binding the listener to `127.0.0.1:port` failed (port in use, etc.).
     #[error("bind failed: {0}")]

@@ -67,6 +67,13 @@ object XBridgePluginRegistry {
         webView: WebView? = null,
         securityPolicy: XBridgeSecurityPolicy = XBridgeSecurityPolicy.allowAll(),
     ) {
+        if (plugin != null && attachedEngine !== flutterEngine) {
+            android.util.Log.w(
+                "XBridgePluginRegistry",
+                "register() called while a previous registration is still active. " +
+                    "Call unregister() first to avoid leaking references.",
+            )
+        }
         currentBridge = nativeBridge
         currentPolicy = securityPolicy
 

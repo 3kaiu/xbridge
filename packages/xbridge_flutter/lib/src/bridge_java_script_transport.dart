@@ -35,7 +35,9 @@ class BridgeJavaScriptTransport {
         .replaceAll('</', '<\\/')
         .replaceAll('<', '\\u003c')
         .replaceAll('>', '\\u003e')
-        .replaceAll('&', '\\u0026');
+        .replaceAll('&', '\\u0026')
+        .replaceAll('\u2028', '\\u2028')
+        .replaceAll('\u2029', '\\u2029');
   }
 
   /// Resolves the pending H5 promise for [id] with [result].
@@ -105,7 +107,7 @@ class BridgeJavaScriptTransport {
       if (params != null) 'params': params,
     };
     final script = 'window.__XBridgeInbound__'
-        '&&window.__XBridgeInbound__(${safeJsonEncode(jsonEncode(request))});';
+        '&&window.__XBridgeInbound__(${BridgeJavaScriptTransport.safeJsonEncode(request)});';
     return controller.runJavaScript(script);
   }
 }

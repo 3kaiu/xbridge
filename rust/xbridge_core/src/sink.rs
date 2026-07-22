@@ -40,6 +40,7 @@ impl DataSink {
     /// returns [`WsError::ChannelFull`] so the caller can log / drop.
     ///
     /// The `Vec<u8>` is moved into the channel, not copied.
+    #[allow(clippy::result_large_err)]
     pub fn try_push(&self, bytes: Vec<u8>) -> Result<(), WsError> {
         match self.tx.try_send(bytes) {
             Ok(()) => Ok(()),
@@ -118,15 +119,21 @@ impl SinkRegistry {
         // Track which is the last live sender index.
         let last_live = live_indices.last().copied();
 
-        let mut bytes = bytes;
+        let mut bytes = Some(bytes);
         for (i, tx) in sinks.iter().enumerate() {
             // Determine if this is the last live sender — if so, move bytes.
             let is_last_live = Some(i) == last_live;
             let payload: Vec<u8> = if is_last_live {
-                // Move original bytes — no clone for the final live subscriber.
-                std::mem::take(&mut bytes)
+                // Move original bytes out — no clone for the final live subscriber.
+                // Use Option::take so we don't leave an empty Vec that could
+                // accidentally be cloned by a later iteration.
+                match bytes.take() {
+                    Some(b) => b,
+                    None => continue, // already consumed — skip dead/extra senders
+                }
             } else {
-                bytes.clone()
+                // Clone for non-last subscribers.
+                bytes.as_ref().cloned().unwrap_or_default()
             };
             match tx.try_send(payload) {
                 Ok(()) => {}

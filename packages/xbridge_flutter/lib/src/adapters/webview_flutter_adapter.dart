@@ -74,6 +74,9 @@ class WebViewFlutterBridgeAdapter {
     final controller = _attachedController;
     if (controller != null) {
       controller.removeJavaScriptChannel(channelName);
+      // Reset the navigation delegate so the onPageFinished callback no
+      // longer fires into a disposed bridge.
+      controller.setNavigationDelegate(NavigationDelegate());
     }
     _attachedController = null;
   }

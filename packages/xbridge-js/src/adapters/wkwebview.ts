@@ -49,6 +49,7 @@ export class WKWebViewAdapter implements IXBridgeAdapter {
   readonly name = "WKWebView";
   private inbound: ((raw: string) => void) | undefined;
   private installed = false;
+  private priorCallback: XBridgeWKCallback | undefined;
 
   isAvailable(): boolean {
     const w = getWindow();
@@ -117,6 +118,7 @@ export class WKWebViewAdapter implements IXBridgeAdapter {
     // adopting XBridge — chaining keeps a brownfield migration no-op safe.
     const prior = w.__XBridgeWKCallback__;
     if (typeof prior === "function") {
+      this.priorCallback = prior;
       w.__XBridgeWKCallback__ = (
         requestId: string | null,
         result?: unknown,
@@ -133,9 +135,48 @@ export class WKWebViewAdapter implements IXBridgeAdapter {
     // injects `window.__XBridgeInbound__(rawJson)` to send a JSON-RPC request
     // to the H5 side; the core's `handleRaw` looks up a registered handler
     // and sends back a response via `adapter.send()`.
-    w.__XBridgeInbound__ = (raw: string): void => {
-      self.inbound?.(raw);
-    };
+    Object.defineProperty(w, "__XBridgeInbound__", {
+      value: (raw: string): void => {
+        self.inbound?.(raw);
+      },
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
+  }
+
+  /**
+   * Tear down: restore prior __XBridgeWKCallback__ and remove
+   * __XBridgeInbound__. Safe to call multiple times.
+   */
+  destroy(): void {
+    if (!this.installed) {
+      return;
+    }
+    this.installed = false;
+    const w = getWindow();
+    if (w === undefined) {
+      return;
+    }
+    // Restore the prior callback if we chained behind one.
+    if (this.priorCallback !== undefined) {
+      w.__XBridgeWKCallback__ = this.priorCallback;
+      this.priorCallback = undefined;
+    } else {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delete (w as any).__XBridgeWKCallback__;
+      } catch {
+        // __XBridgeWKCallback__ was installed via plain assignment;
+        // if it can't be deleted (strict mode), set to undefined as fallback.
+        w.__XBridgeWKCallback__ = undefined;
+      }
+    }
+    // Remove __XBridgeInbound__. It was installed via defineProperty with
+    // configurable:false, so we can't delete it — but we can't reconfigure
+    // it either. The best we can do is leave it in place; the `inbound`
+    // handler is now undefined so calls become no-ops.
+    this.inbound = undefined;
   }
 
   private dispatchResponse(id: string, result: unknown, error: unknown): void {
@@ -150,7 +191,7 @@ export class WKWebViewAdapter implements IXBridgeAdapter {
       // Legacy WK error is a free-form object/string. Wrap into a JSON-RPC
       // error envelope; keep `data` as the original for round-trip fidelity.
       response["error"] =
-        error !== null && typeof error === "object" && "message" in error
+        typeof error === "object" && "message" in error
           ? error
           : {
               code: -32000,
