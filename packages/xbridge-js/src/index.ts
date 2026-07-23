@@ -7,11 +7,9 @@
  * wrong.
  *
  * Sniff order (first match wins):
- *   1. `window.flutter_inappwebview`  → InAppWebViewAdapter
- *   2. `window.XBridge`                → FlutterChannelAdapter
- *   3. `window.webkit.messageHandlers.XBridgeWK` → WKWebViewAdapter
- *   4. `window.dsbridge`              → NativeSyncAdapter (sync only, async warns)
- *   5. none                            → NoopAdapter (warns "no bridge environment")
+ *   1. `window.XBridge.postMessage` → StandardAdapter
+ *   2. `window.dsbridge.call`        → NativeSyncAdapter (sync only, async warns)
+ *   3. none                           → NoopAdapter (warns "no bridge environment")
  *
  * When `window.dsbridge` is detected but no async adapter is, it is installed
  * as the sync adapter only — `callSync` works, `call` warns. This matches the
@@ -23,10 +21,9 @@ import type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
 import { XBridgeCore } from "./core/bridge.js";
 import type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
 import type { XBridgeCallOptions } from "./types.js";
-import { FlutterChannelAdapter } from "./adapters/flutter_channel.js";
+import { StandardAdapter } from "./adapters/standard.js";
+import { setSniffCacheInvalidator } from "./adapters/standard.js";
 import { NativeSyncAdapter } from "./adapters/native_sync.js";
-import { InAppWebViewAdapter } from "./adapters/inappwebview.js";
-import { WKWebViewAdapter } from "./adapters/wkwebview.js";
 
 // Re-export the full public surface.
 export { XBridgeCore } from "./core/bridge.js";
@@ -36,12 +33,8 @@ export type { PendingRequest, TimeoutError } from "./core/dispatcher.js";
 export { generateId } from "./core/id.js";
 export type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
 export {
-  FlutterChannelAdapter,
-  WKWebViewAdapter,
-  InAppWebViewAdapter,
+  StandardAdapter,
   NativeSyncAdapter,
-  XBRIDGE_INAPP_HANDLER_NAME,
-  XBRIDGE_DISPATCH_GLOBAL,
 } from "./adapters/index.js";
 export {
   XBRIDGE_PROTOCOL_VERSION,
@@ -64,24 +57,22 @@ export interface XBridgeOptions {
 }
 
 /**
- * No-op adapter used when no host bridge is detected. Every `send` logs a
- * warning so callers discover the missing environment quickly rather than
- * hanging on a pending Promise (the dispatcher's timeout will still fire).
+ * No-op adapter used when no host bridge is detected. Every `send` throws
+ * immediately so the caller gets a clear "no transport" error instead of
+ * hanging for the full dispatcher timeout (30s by default).
  */
 class NoopAdapter implements IXBridgeAdapter {
   readonly name = "Noop";
 
   isAvailable(): boolean {
-    return true;
+    return false;
   }
 
-  send(message: string): void {
-    if (typeof console !== "undefined") {
-      console.warn(
-        "[XBridge] no bridge environment detected; dropping outbound message:",
-        message,
-      );
-    }
+  send(_message: string): void {
+    throw new Error(
+      "[XBridge] no bridge environment detected; call() cannot deliver messages. " +
+        "Ensure the host (Flutter/native) has injected the bridge global before calling.",
+    );
   }
 
   onMessage(_handler: (raw: string) => void): void {
@@ -90,13 +81,7 @@ class NoopAdapter implements IXBridgeAdapter {
 }
 
 interface WindowForSniff {
-  flutter_inappwebview?: unknown;
   XBridge?: { postMessage?: unknown };
-  webkit?: {
-    messageHandlers?: {
-      XBridgeWK?: { postMessage?: unknown };
-    };
-  };
   dsbridge?: { call?: unknown };
 }
 
@@ -108,47 +93,55 @@ function sniffWindow(): WindowForSniff | undefined {
 
 /** Cached environment detection booleans — never store adapter instances. */
 interface SniffCache {
-  hasInAppWebView: boolean;
-  hasFlutterChannel: boolean;
-  hasWKWebView: boolean;
+  hasStandard: boolean;
   hasNativeSync: boolean;
   warned: boolean;
 }
 
 let sniffCache: SniffCache | null = null;
 
+// Wire the sniff-cache invalidator so `StandardAdapter.resetSniffCache()` and
+// the exported `resetSniffCache()` can clear this cache without a circular
+// import.
+setSniffCacheInvalidator((): void => {
+  sniffCache = null;
+});
+
+/**
+ * Invalidate the cached environment sniff result so that a late-injected
+ * `window.XBridge` is detected on the next `XBridge` construction.
+ *
+ * Delegates to `StandardAdapter.resetSniffCache()`.
+ */
+export function resetSniffCache(): void {
+  StandardAdapter.resetSniffCache();
+}
+
 function detectEnv(): SniffCache {
   if (sniffCache !== null) {
     return sniffCache;
   }
   const w = sniffWindow();
-  const hasInAppWebView =
-    w !== undefined &&
-    typeof (w as { flutter_inappwebview?: { callHandler?: unknown } }).flutter_inappwebview
-      ?.callHandler === "function";
-  const hasFlutterChannel =
+  const hasStandard =
     w !== undefined && typeof w.XBridge?.postMessage === "function";
-  const hasWKWebView =
-    w !== undefined &&
-    typeof w.webkit?.messageHandlers?.XBridgeWK?.postMessage === "function";
   const hasNativeSync = w !== undefined && typeof w.dsbridge?.call === "function";
 
   let warned = false;
-  if (hasNativeSync && !hasInAppWebView && !hasFlutterChannel && !hasWKWebView) {
+  if (hasNativeSync && !hasStandard) {
     warned = true;
     if (typeof console !== "undefined") {
       console.warn(
         "[XBridge] only native sync bridge detected; callSync is available but async call() has no transport.",
       );
     }
-  } else if (!hasInAppWebView && !hasFlutterChannel && !hasWKWebView) {
+  } else if (!hasStandard) {
     warned = true;
     if (typeof console !== "undefined") {
       console.warn("[XBridge] no bridge environment detected.");
     }
   }
 
-  sniffCache = { hasInAppWebView, hasFlutterChannel, hasWKWebView, hasNativeSync, warned };
+  sniffCache = { hasStandard, hasNativeSync, warned };
   return sniffCache;
 }
 
@@ -157,14 +150,8 @@ function detectEnv(): SniffCache {
  * when no transport is detected.
  */
 function pickAdapter(env: SniffCache): IXBridgeAdapter {
-  if (env.hasInAppWebView) {
-    return new InAppWebViewAdapter();
-  }
-  if (env.hasFlutterChannel) {
-    return new FlutterChannelAdapter();
-  }
-  if (env.hasWKWebView) {
-    return new WKWebViewAdapter();
+  if (env.hasStandard) {
+    return new StandardAdapter();
   }
   return new NoopAdapter();
 }

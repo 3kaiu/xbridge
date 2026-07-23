@@ -40,6 +40,12 @@ public struct XBridgeSecurityPolicy {
 
     // MARK: - Factory methods
 
+    /// Create a policy that denies all origins — secure default.
+    /// Use `allowAll()` for development or `allowlist(_:)` for production.
+    public static func denyAll() -> XBridgeSecurityPolicy {
+        return XBridgeSecurityPolicy(allowedOrigins: [], allowAll: false)
+    }
+
     /// Create a policy that permits all origins.
     /// - Warning: Use only in development environments.
     public static func allowAll() -> XBridgeSecurityPolicy {
@@ -48,7 +54,34 @@ public struct XBridgeSecurityPolicy {
 
     /// Create a policy that permits only the specified origins.
     public static func allowlist(_ origins: Set<String>) -> XBridgeSecurityPolicy {
-        return XBridgeSecurityPolicy(allowedOrigins: origins, allowAll: false)
+        let normalized = Set(origins.map(XBridgeSecurityPolicy.normalizeOrigin))
+        return XBridgeSecurityPolicy(allowedOrigins: normalized, allowAll: false)
+    }
+
+    // MARK: - Origin normalization
+
+    /// Normalize an origin string for comparison.
+    ///
+    /// Trims whitespace, lowercases, strips trailing slashes, and strips
+    /// default ports (443 for https, 80 for http) so that
+    /// `"https://app.example.com:443/"` and `"https://app.example.com"` match.
+    static func normalizeOrigin(_ origin: String) -> String {
+        var value = origin.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        if value.hasPrefix("https://") {
+            let host = String(value.dropFirst("https://".count))
+            value = host.hasSuffix(":443")
+                ? "https://\(String(host.dropLast(":443".count)))"
+                : "https://\(host)"
+        } else if value.hasPrefix("http://") {
+            let host = String(value.dropFirst("http://".count))
+            value = host.hasSuffix(":80")
+                ? "http://\(String(host.dropLast(":80".count)))"
+                : "http://\(host)"
+        }
+        return value
     }
 
     // MARK: - Evaluation
@@ -65,6 +98,11 @@ public struct XBridgeSecurityPolicy {
         guard let origin = origin else {
             return false
         }
-        return allowedOrigins.contains(origin)
+        // Reject "null" origin (sandboxed iframes, data: URIs) and wildcard "*"
+        // to match the Rust WS server's security checks.
+        if origin == "null" || origin == "*" {
+            return false
+        }
+        return allowedOrigins.contains(XBridgeSecurityPolicy.normalizeOrigin(origin))
     }
 }

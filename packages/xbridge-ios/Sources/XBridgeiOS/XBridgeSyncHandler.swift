@@ -9,6 +9,25 @@
 import Foundation
 import WebKit
 
+/// Weak proxy that forwards `WKScriptMessageHandler` calls to a target
+/// without creating a retain cycle. `WKUserContentController.add(_:name:)`
+/// retains its delegate; using this proxy breaks the cycle because the
+/// proxy holds only a weak reference to the real handler.
+private final class WeakScriptMessageDelegate: NSObject, WKScriptMessageHandler {
+    weak var target: XBridgeSyncHandler?
+
+    init(target: XBridgeSyncHandler) {
+        self.target = target
+    }
+
+    func userContentController(
+        _ contentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        target?.userContentController(contentController, didReceive: message)
+    }
+}
+
 /// A `WKScriptMessageHandler` that provides a bridge call path for H5 code,
 /// bypassing the async Flutter MethodChannel.
 ///
@@ -55,6 +74,21 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
     /// The app-supplied delegate for forwarding bridge calls.
     public weak var nativeBridge: XBridgeNativeBridge?
 
+    /// Defense-in-depth security policy for the sync bypass path.
+    /// Defaults to deny-all. Set to `allowAll()` for development or
+    /// `allowlist(_:)` for production.
+    public var securityPolicy: XBridgeSecurityPolicy = .denyAll()
+
+    /// Origin provider closure — should return the current page origin
+    /// (e.g. from `webView.url`). Defaults to `nil`, which denies all
+    /// under a non-`allowAll` policy.
+    public var originProvider: () -> String? = { nil }
+
+    /// Weak proxy used to break the `WKUserContentController` retain cycle.
+    /// `WKUserContentController.add(self, name:)` would strongly retain `self`,
+    /// preventing deallocation. The proxy holds only a weak reference.
+    private var weakProxy: WeakScriptMessageDelegate?
+
     /// The WKWebView to push results back via `evaluateJavaScript`.
     private weak var webView: WKWebView?
 
@@ -82,13 +116,26 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
     /// old handler before re-adding, and skips duplicate `WKUserScript`
     /// injection.
     public func attach(to webView: WKWebView) {
+        // If attaching to a different WKWebView than the current one, the
+        // previously injected user script lives on the old content controller
+        // and must be re-injected into the new one.
+        if self.webView != nil && self.webView !== webView {
+            scriptInjected = false
+        }
+
         self.webView = webView
         let contentController = webView.configuration.userContentController
 
         // Remove any previously registered message handler for this name
         // to avoid a crash on re-attach ("handler already registered").
         contentController.removeScriptMessageHandler(forName: "XBridgeSync")
-        contentController.add(self, name: "XBridgeSync")
+
+        // Use a weak proxy to avoid the retain cycle caused by
+        // `WKUserContentController.add(self, name:)` which strongly retains
+        // its delegate. The proxy holds only a weak reference to `self`.
+        let proxy = WeakScriptMessageDelegate(target: self)
+        weakProxy = proxy
+        contentController.add(proxy, name: "XBridgeSync")
 
         // Inject the JS helper only once per instance to avoid
         // duplicate user scripts on re-attach.
@@ -138,22 +185,17 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
             WKUserScript(
                 source: jsHelper,
                 injectionTime: .atDocumentStart,
-                forMainFrameOnly: false
+                forMainFrameOnly: true
             )
         )
     }
 
-    /// Detach from the content controller to break the
-    /// `WKUserContentController` retain cycle.
+    /// Detach from the content controller to clean up resources.
     ///
-    /// - Important: The app **MUST** call this from an external lifecycle
-    ///   hook (e.g. `viewDidDisappear`, `deinit` of the view controller,
-    ///   or `AppDelegate` teardown) — **not** from this class's own
-    ///   `deinit`. Because `WKUserContentController.add(self, name:)`
-    ///   retains `self` (this handler), this object's `deinit` will
-    ///   never fire until the message handler is removed. Calling
-    ///   `detach()` from external lifecycle is the only way to break
-    ///   the cycle.
+    /// With the weak proxy pattern, the retain cycle is already broken
+    /// (the content controller retains the proxy, not `self`). However,
+    /// calling `detach()` is still recommended to remove the message
+    /// handler and user script from the content controller cleanly.
     public func detach() {
         if let webView = webView {
             webView.configuration.userContentController.removeScriptMessageHandler(
@@ -161,6 +203,20 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
             )
         }
         webView = nil
+        weakProxy = nil
+        // Reset so the next attach re-injects the user script.
+        scriptInjected = false
+    }
+
+    /// Safety-net deinit. With the weak proxy pattern, `self` is not retained
+    /// by the content controller, so `deinit` will fire normally. This ensures
+    /// cleanup even if the app forgets to call `detach()`.
+    deinit {
+        if let webView = webView {
+            webView.configuration.userContentController.removeScriptMessageHandler(
+                forName: "XBridgeSync"
+            )
+        }
     }
 
     // MARK: - WKScriptMessageHandler (async delivery) ───────────────────
@@ -194,6 +250,18 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
         // JS side is Promise-based, result push-back is already async.
         let invokeBlock: () -> Void = { [weak self] in
             guard let self = self else { return }
+
+            // Security policy check (defense-in-depth).
+            let origin = self.originProvider()
+            if !self.securityPolicy.allows(origin: origin) {
+                self.pushError(
+                    callbackId: callbackId,
+                    code: "ORIGIN_NOT_ALLOWED",
+                    message: "Origin '\(origin ?? "nil")' is not permitted by the security policy"
+                )
+                return
+            }
+
             guard let nativeBridge = self.nativeBridge else {
                 self.pushError(
                     callbackId: callbackId,
@@ -218,38 +286,37 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
 
     /// Push a successful result back to JS via `evaluateJavaScript`.
     ///
-    /// Uses `JSONSerialization` to encode `[callbackId, result]` as a JSON
-    /// array, avoiding manual string-escaping bugs (e.g. `'`, `/`, `</`).
+    /// Serializes the entire `[callbackId, {"result": result}]` payload in one
+    /// `JSONSerialization` pass so that all string escaping (including special
+    /// characters in `callbackId` and `result`) is handled by the serializer.
+    /// Uses `.apply(null, …)` to match the error-path call style.
     private func pushResult(callbackId: String, result: Any?) {
-        guard let webView = webView else { return }
-
-        // Build a JSON array [callbackId, result] and pass to the JS callback.
-        // JSONSerialization handles all escaping correctly.
-        var jsonResult: Any = result ?? NSNull()
-        if let result = result {
-            if !JSONSerialization.isValidJSONObject(result) {
-                // Convert non-JSON-serializable values to strings.
-                if let str = result as? String {
-                    jsonResult = [str] // array with single string → extract
-                    if let data = try? JSONSerialization.data(withJSONObject: jsonResult),
-                       let arr = String(data: data, encoding: .utf8) {
-                        jsonResult = String(arr.dropFirst().dropLast())
-                    } else {
-                        jsonResult = result
-                    }
-                } else if let b = result as? Bool {
-                    jsonResult = b ? "true" : "false"
-                } else if let num = result as? NSNumber {
-                    jsonResult = num.stringValue
-                } else {
-                    jsonResult = "\(result)"
-                }
-            }
+        guard let webView = webView else {
+            #if DEBUG
+            print("[XBridgeSync] pushResult: webView is nil, callback \(callbackId) will leak in JS")
+            #endif
+            return
         }
 
-        guard let data = try? JSONSerialization.data(withJSONObject: [callbackId, jsonResult]),
-              let jsonStr = String(data: data, encoding: .utf8) else {
-            return
+        let resultValue: Any = result ?? NSNull()
+        let envelope: [String: Any] = ["result": resultValue]
+        let payload: [Any] = [callbackId, envelope]
+
+        let jsonStr: String
+        if let data = try? JSONSerialization.data(withJSONObject: payload),
+           let s = String(data: data, encoding: .utf8) {
+            jsonStr = s
+        } else {
+            // Fallback when result is not JSON-serializable:
+            // string-describe the result and try again.
+            let fallbackEnvelope: [String: String] = ["result": "\(result ?? "null")"]
+            let fallbackPayload: [Any] = [callbackId, fallbackEnvelope]
+            if let data = try? JSONSerialization.data(withJSONObject: fallbackPayload),
+               let s = String(data: data, encoding: .utf8) {
+                jsonStr = s
+            } else {
+                jsonStr = "[\(callbackId),{\"result\":null}]"
+            }
         }
 
         let js = "window.XBridgeSync._resolveCallback.apply(null, \(jsonStr));"

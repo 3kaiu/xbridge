@@ -2,8 +2,7 @@
  * Adapter contracts — the seam between the XBridge core and a concrete transport.
  *
  * Implementations live under {@link ../adapters/}. An adapter owns a single
- * platform channel (e.g. `window.XBridge`, `window.webkit.messageHandlers`,
- * `window.flutter_inappwebview`) and is responsible for:
+ * platform channel (e.g. `window.XBridge`) and is responsible for:
  *
  * 1. Sending a serialized XBridge wire message to the host (`send`).
  * 2. Installing a single inbound handler that receives raw wire strings and

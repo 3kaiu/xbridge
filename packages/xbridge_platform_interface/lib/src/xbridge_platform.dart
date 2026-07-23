@@ -39,10 +39,10 @@ abstract class XBridgePlatform {
 
   /// Starts a local WebSocket server bound to the loopback interface on [port].
   ///
-  /// Pass `0` to let the OS pick a free port; the actual port is then
-  /// observable via [getLocalWebSocketEndpoint]. Platform implementations must
+  /// Pass `0` to let the OS pick a free port; the actual bound port is
+  /// returned as a positive `int`. Platform implementations must
   /// only ever bind to `127.0.0.1` (or `::1`) — never to `0.0.0.0`.
-  Future<void> setupLocalWebSocketServer({required int port});
+  Future<int> setupLocalWebSocketServer({required int port});
 
   /// Stops the local WebSocket server started by [setupLocalWebSocketServer].
   ///

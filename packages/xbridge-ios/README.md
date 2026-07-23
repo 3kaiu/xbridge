@@ -1,6 +1,6 @@
 # XBridgeiOS
 
-Native iOS component of the [XBridge](https://github.com/nickcao/xbridge) SDK — a generic, business-free cross-platform bridge for H5 ↔ Flutter ↔ Native communication.
+Native iOS component of the [XBridge](https://github.com/3kaiu/xbridge) SDK — a generic, business-free cross-platform bridge for H5 ↔ Flutter ↔ Native communication.
 
 ## Features
 
@@ -76,9 +76,8 @@ class AppDelegate: FlutterAppDelegate {
 
         let controller = window?.rootViewController as? FlutterViewController
         if let controller = controller {
-            let registrar = controller.registrar(forPlugin: "XBridgePlugin")!
-            let plugin = XBridgePlugin.register(with: registrar)
-            plugin.nativeBridge = MyBridgeAdapter()
+            guard let registrar = controller.registrar(forPlugin: "XBridgePlugin") else { return }
+            let plugin = XBridgePlugin.register(with: registrar, nativeBridge: MyBridgeAdapter())
         }
 
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
@@ -93,6 +92,8 @@ In your `WKWebView` setup:
 ```swift
 let syncHandler = XBridgeSyncHandler()
 syncHandler.nativeBridge = MyBridgeAdapter()
+syncHandler.securityPolicy = .allowlist(["https://app.example.com"])
+syncHandler.originProvider = { webView.url?.originString }
 syncHandler.attach(to: webView)
 ```
 

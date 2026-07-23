@@ -28,7 +28,7 @@ public protocol XBridgeNativeBridge: AnyObject {
     /// Invoke a bridge method synchronously.
     ///
     /// - Parameters:
-    ///   - method: The method name (e.g. `"getToken"`, `"getAppInfo"`).
+    ///   - method: The method name (e.g. `"getDeviceInfo"`, `"getAppInfo"`).
     ///   - params: Arbitrary parameters from the caller. May be nil.
     /// - Returns: The result value, or nil if the method has no return value.
     ///

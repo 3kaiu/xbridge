@@ -25,6 +25,7 @@
 pub mod bridge;
 pub mod control;
 pub mod error;
+pub mod ffi;
 pub mod handler;
 pub mod server;
 pub mod sink;
@@ -32,6 +33,7 @@ pub mod sink;
 pub use bridge::{
     xbridge_ws_set_binary_callback, xbridge_ws_start, xbridge_ws_stop,
 };
+pub use ffi::{xbridge_ffi_echo, xbridge_ffi_free, xbridge_ffi_ping};
 pub use control::{ControlMessage, ControlResponse};
 pub use error::WsError;
 pub use handler::{ConnectionHandler, ConnectionHandlerBuilder};

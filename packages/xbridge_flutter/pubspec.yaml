@@ -9,13 +9,11 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  xbridge_protocol:
+    path: ../xbridge_protocol
   xbridge_platform_interface:
     path: ../xbridge_platform_interface
-  # Both WebView engines are regular dependencies so the adapter types resolve
-  # at compile time. They are "optional" in the sense that an app only needs to
-  # *use* (attach) the adapter matching its engine — the other adapter simply
-  # never receives traffic. Keeping both as deps avoids conditional-import
-  # gymnastics and matches the federated-plugin convention.
+  ffi: ^2.1.0
   webview_flutter: ^4.0.0
   flutter_inappwebview: ^6.0.0
 

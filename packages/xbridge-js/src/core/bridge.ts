@@ -32,7 +32,9 @@ export type XBridgeEventListener = (params: unknown) => void;
 export type XBridgeHandler = (params: unknown) => unknown | Promise<unknown>;
 
 function isResponse(msg: XBridgeMessage): msg is XBridgeResponse {
-  return typeof (msg as XBridgeResponse).id === "string" && typeof (msg as XBridgeEvent).method !== "string";
+  return typeof (msg as XBridgeResponse).id === "string"
+    && typeof (msg as XBridgeEvent).method !== "string"
+    && ("result" in msg || "error" in msg);
 }
 
 function isInboundRequest(msg: XBridgeMessage): msg is XBridgeRequest {
@@ -125,8 +127,9 @@ export class XBridgeCore {
 
   /**
    * Synchronously invoke `method`. Routes to the sync adapter when present;
-   * otherwise warns and returns `undefined` (PRD §P1). Never throws to the
-   * caller — a missing sync channel is a soft-degraded state, not an error.
+   * otherwise warns and returns `undefined` (PRD §P1). If the native side
+   * returns a structured error envelope `{"error":{code,message}}`, the
+   * error is thrown so callers can distinguish errors from `undefined` returns.
    */
   callSync(method: string, params?: unknown): unknown {
     if (this.syncAdapter === undefined || !this.syncAdapter.isAvailable()) {
@@ -138,12 +141,33 @@ export class XBridgeCore {
       return undefined;
     }
     try {
-      return this.syncAdapter.callSync(method, params);
+      const result = this.syncAdapter.callSync(method, params);
+      // Check if the result is a structured error envelope from the native side.
+      // Android returns {"error": {"code": "...", "message": "..."}} on failure.
+      if (
+        result !== null &&
+        typeof result === "object" &&
+        typeof (result as Record<string, unknown>).error === "object" &&
+        (result as Record<string, unknown>).error !== null
+      ) {
+        const errObj = (result as Record<string, { code?: unknown; message?: unknown }>).error;
+        const error = new Error(
+          `[XBridge] callSync('${method}') failed: ${errObj.message ?? "unknown error"}`,
+        );
+        (error as { code?: unknown }).code = errObj.code;
+        throw error;
+      }
+      return result;
     } catch (err) {
+      // Re-throw errors that we constructed from a structured error envelope.
+      if (err instanceof Error && err.message.startsWith("[XBridge] callSync('")) {
+        throw err;
+      }
+      // Native adapter threw — re-throw so the caller can handle it.
       if (typeof console !== "undefined") {
         console.warn(`[XBridge] callSync('${method}') threw:`, err);
       }
-      return undefined;
+      throw err;
     }
   }
 
@@ -246,7 +270,18 @@ export class XBridgeCore {
           typeof rawError === "object" &&
           typeof (rawError as { message?: unknown }).message === "string"
         ) {
-          this.dispatcher.reject(response.id, rawError as XBridgeError);
+          // Normalize code: JSON-RPC 2.0 specifies numeric codes, but the
+          // Flutter/Dart side may send String codes (e.g. 'BRIDGE_METHOD_FORBIDDEN').
+          // Preserve the original value so consumers can distinguish error types.
+          const rawCode = (rawError as { code?: unknown }).code;
+          const code: number | string = typeof rawCode === "number" || typeof rawCode === "string"
+            ? rawCode
+            : -32000;
+          this.dispatcher.reject(response.id, {
+            code,
+            message: (rawError as { message: string }).message,
+            data: (rawError as { data?: unknown }).data,
+          });
         } else {
           this.dispatcher.reject(response.id, {
             code: -32000,
@@ -281,8 +316,11 @@ export class XBridgeCore {
     if (listeners === undefined || listeners.size === 0) {
       return;
     }
-    // Iterate a snapshot so a listener may unsubscribe during dispatch.
-    for (const listener of Array.from(listeners)) {
+    // Iterate the Set directly — the ECMAScript spec guarantees that
+    // entries deleted during iteration (e.g. a listener unsubscribes itself)
+    // are skipped safely, and new entries added during iteration are not
+    // visited. This avoids the per-dispatch allocation of Array.from.
+    for (const listener of listeners) {
       try {
         listener(params);
       } catch (err) {
@@ -317,10 +355,18 @@ export class XBridgeCore {
           this.sendInboundResponse(id, result, undefined);
         },
         (err: unknown): void => {
+          // Make the error JSON-serializable: Error objects have
+          // non-enumerable properties, so JSON.stringify(Error) → "{}".
+          let serializableData: unknown;
+          if (err instanceof Error) {
+            serializableData = { name: err.name, message: err.message };
+          } else {
+            serializableData = err;
+          }
           this.sendInboundResponse(id, undefined, {
             code: -32000,
             message: typeof err === "string" ? err : (err as { message?: string })?.message ?? "Handler error",
-            data: err,
+            data: serializableData,
           });
         },
       );
@@ -332,12 +378,10 @@ export class XBridgeCore {
     result: unknown,
     error: XBridgeError | undefined,
   ): void {
-    const response: XBridgeResponse = {
-      jsonrpc: XBRIDGE_PROTOCOL_VERSION,
-      id,
-      result,
-      error,
-    };
+    // JSON-RPC 2.0 §5: result and error are mutually exclusive.
+    const response: XBridgeResponse = error !== undefined
+      ? { jsonrpc: XBRIDGE_PROTOCOL_VERSION, id, error }
+      : { jsonrpc: XBRIDGE_PROTOCOL_VERSION, id, result };
     try {
       this.adapter.send(JSON.stringify(response));
     } catch (err) {

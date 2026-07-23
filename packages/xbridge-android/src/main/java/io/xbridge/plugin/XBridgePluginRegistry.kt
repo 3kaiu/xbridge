@@ -35,15 +35,18 @@ object XBridgePluginRegistry {
 
     @Volatile
     private var plugin: XBridgePlugin? = null
+    @Volatile
     private var syncInterface: XBridgeSyncInterface? = null
     @Volatile
     private var currentBridge: XBridgeNativeBridge? = null
     @Volatile
-    private var currentPolicy: XBridgeSecurityPolicy = XBridgeSecurityPolicy.allowAll()
+    private var currentPolicy: XBridgeSecurityPolicy = XBridgeSecurityPolicy.denyAll()
     @Volatile
     private var currentOrigin: String? = null
     @Volatile
     private var attachedEngine: FlutterEngine? = null
+    @Volatile
+    private var attachedWebView: WebView? = null
 
     /**
      * Register the XBridge plugin and (optionally) the sync bypass interface.
@@ -57,41 +60,50 @@ object XBridgePluginRegistry {
      *                      sync bypass is not needed or the WebView is not
      *                      yet available — you can call [attachSyncInterface]
      *                      later once the WebView is ready.
-     * @param securityPolicy Initial security policy. Defaults to `allowAll`
-     *                      for development; set a real allowlist for production.
+     * @param securityPolicy Initial security policy. Defaults to **deny-all**
+     *                      for production safety; set `allowAll()` for development
+     *                      or an allowlist for production.
      */
     @JvmOverloads
     fun register(
         flutterEngine: FlutterEngine,
         nativeBridge: XBridgeNativeBridge? = null,
         webView: WebView? = null,
-        securityPolicy: XBridgeSecurityPolicy = XBridgeSecurityPolicy.allowAll(),
+        securityPolicy: XBridgeSecurityPolicy = XBridgeSecurityPolicy.denyAll(),
     ) {
-        if (plugin != null && attachedEngine !== flutterEngine) {
+        // If already registered with the same engine, no-op (prevents duplicate handlers).
+        if (plugin != null && attachedEngine === flutterEngine) {
+            // Update the bridge and policy in-place.
+            currentBridge = nativeBridge
+            currentPolicy = securityPolicy
+            plugin?.setNativeBridge(nativeBridge)
+            plugin?.setSecurityPolicy(securityPolicy)
+            if (webView != null) {
+                attachSyncInterface(webView)
+            }
+            return
+        }
+
+        // If a previous registration is still active with a different engine,
+        // auto-unregister first to avoid leaking the old Activity/WebView.
+        val oldEngine = attachedEngine
+        if (plugin != null && oldEngine != null && oldEngine !== flutterEngine) {
             android.util.Log.w(
                 "XBridgePluginRegistry",
-                "register() called while a previous registration is still active. " +
-                    "Call unregister() first to avoid leaking references.",
+                "register() called with a new engine while a previous registration is active. " +
+                    "Auto-unregistering the previous registration to avoid leaks.",
             )
+            unregister(oldEngine!!)
         }
+
         currentBridge = nativeBridge
         currentPolicy = securityPolicy
 
-        // Create or reuse the plugin instance.
-        var p = plugin
-        if (p == null) {
-            p = XBridgePlugin()
-            plugin = p
-        }
+        // Create a new plugin instance for this engine.
+        val p = XBridgePlugin()
+        plugin = p
         p.setNativeBridge(nativeBridge)
         p.setSecurityPolicy(securityPolicy)
-
-        // If the plugin is already attached to a different engine,
-        // remove it from the old engine first to avoid duplicate handlers.
-        val oldEngine = attachedEngine
-        if (oldEngine != null && oldEngine !== flutterEngine) {
-            oldEngine.plugins.remove(p)
-        }
 
         // FlutterEngine.plugins is a PluginRegistry. Calling add() with a
         // FlutterPlugin triggers onAttachedToEngine automatically.
@@ -110,6 +122,8 @@ object XBridgePluginRegistry {
      * `WebViewController` has created its platform view).
      */
     fun attachSyncInterface(webView: WebView) {
+        // Remove old interface from previous WebView if any.
+        attachedWebView?.removeJavascriptInterface("XBridgeSync")
         val sync = XBridgeSyncInterface(
             nativeBridgeProvider = { currentBridge },
             securityPolicyProvider = { currentPolicy },
@@ -117,6 +131,7 @@ object XBridgePluginRegistry {
         )
         sync.attach(webView)
         syncInterface = sync
+        attachedWebView = webView
     }
 
     /**
@@ -153,10 +168,14 @@ object XBridgePluginRegistry {
         plugin?.let {
             flutterEngine.plugins.remove(it)
         }
+        // Remove the JavascriptInterface from the WebView to prevent leaks.
+        attachedWebView?.removeJavascriptInterface("XBridgeSync")
         plugin = null
         syncInterface = null
         currentBridge = null
         currentOrigin = null
+        currentPolicy = XBridgeSecurityPolicy.denyAll()
         attachedEngine = null
+        attachedWebView = null
     }
 }

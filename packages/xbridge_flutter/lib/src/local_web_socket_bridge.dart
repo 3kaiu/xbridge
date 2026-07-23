@@ -18,10 +18,9 @@ class LocalWebSocketBridge {
   /// Starts the local WebSocket server on the native side.
   ///
   /// Pass `port: 0` to let the OS pick a free loopback port; the actual port
-  /// is then observable via [getEndpoint]. Safe to call multiple times —
-  /// repeated calls are forwarded to the platform implementation which is
-  /// expected to be idempotent.
-  Future<void> start({int port = 0}) {
+  /// is returned. Safe to call multiple times — repeated calls are forwarded
+  /// to the platform implementation which is expected to be idempotent.
+  Future<int> start({int port = 0}) {
     return _platform.setupLocalWebSocketServer(port: port);
   }
 
