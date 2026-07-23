@@ -1,0 +1,19 @@
+// XBridge Android SDK — multi-module Gradle project.
+//
+// Modules:
+//   :xbridge-core    — pure Kotlin, zero Flutter dependency (sync interface,
+//                       security policy, JNI bridge, native bridge protocol)
+//   :xbridge-flutter  — Flutter plugin glue (FlutterPlugin, MethodChannel)
+//
+// Pure native apps depend on :xbridge-core only.
+// Flutter apps get :xbridge-flutter transitively via the Flutter plugin system.
+
+rootProject.name = "xbridge-android"
+
+include ':xbridge-core', ':xbridge-flutter'
+
+// JitPack builds from the root project. The root project doesn't produce an
+// artifact — only the submodules do. JitPack uses `com.github.User:Repo:Tag`
+// as the group, so consumers write:
+//   implementation 'com.github.3kaiu.xbridge:xbridge-core:0.1.0'
+//   implementation 'com.github.3kaiu.xbridge:xbridge-flutter:0.1.0'

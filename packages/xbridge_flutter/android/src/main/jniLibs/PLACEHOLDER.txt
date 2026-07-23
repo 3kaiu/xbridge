@@ -1,0 +1,1 @@
+libxbridge_core.so will be placed here by CI or Cargokit.

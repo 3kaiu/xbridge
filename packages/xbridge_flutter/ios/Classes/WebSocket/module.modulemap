@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: MIT
+//
+// module.modulemap
+// XBridgeiOS
+//
+// Module map for the Rust `xbridge_core` C-ABI bridging header.
+//
+// This allows Swift to `import XBridgeCoreC` and call the C functions
+// declared in `xbridge_core.h`.
+//
+// IMPORTANT: For this module to resolve at link time, the consumer must add
+// the Rust-built `xbridge_core.xcframework` to their Xcode project. See
+// README.md for build instructions.
+//
+
+module XBridgeCoreC {
+    header "xbridge_core.h"
+    export *
+}

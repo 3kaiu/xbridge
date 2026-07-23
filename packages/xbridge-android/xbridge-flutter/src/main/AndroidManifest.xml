@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  XBridge Android SDK — minimal library manifest.
+
+  The INTERNET permission is required because the local WebSocket server
+  (backed by Rust xbridge_core) binds a socket on 127.0.0.1. Even though
+  the server is loopback-only, Android requires INTERNET for any socket
+  creation. The host app typically already declares this permission.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.xbridge">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+</manifest>

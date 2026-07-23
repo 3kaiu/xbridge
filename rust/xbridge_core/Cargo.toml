@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "XBridge local WebSocket server — high-perf streaming bypass for cross-platform bridge SDK"
 license = "MIT"
-repository = "https://github.com/xbridge/xbridge"
+repository = "https://github.com/3kaiu/xbridge"
+homepage = "https://github.com/3kaiu/xbridge"
+keywords = ["bridge", "websocket", "cross-platform", "ffi"]
+categories = ["network-programming", "api-bindings"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
