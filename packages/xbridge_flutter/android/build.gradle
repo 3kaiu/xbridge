@@ -1,0 +1,55 @@
+// XBridge Flutter Plugin — Android integration.
+//
+// This build.gradle is picked up by the Flutter toolchain when a consumer
+// adds `xbridge_flutter` to their pubspec.yaml. It includes the full
+// XBridge Android SDK (core + flutter glue) as a single module.
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+group = 'io.xbridge'
+version = '0.1.0'
+
+android {
+    namespace 'io.xbridge'
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 21
+        targetSdk 34
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main {
+            // Kotlin sources for both core and flutter-glue are here.
+            // The structure mirrors packages/xbridge-android/ in the monorepo.
+            java.srcDirs = ['src/main/kotlin']
+            // Native .so libraries (libxbridge_core.so) — filled by CI or
+            // Cargokit at consumer build time.
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    // Flutter embedding — provided by the host app's Flutter Gradle tooling.
+    compileOnly 'io.flutter:flutter_embedding_debug:1.0.0-dbed2c7f7ee5fe5a437f5c5418e5a25d0611d7a8'
+    compileOnly 'io.flutter:flutter_embedding_release:1.0.0-dbed2c7f7ee5fe5a437f5c5418e5a25d0611d7a8'
+    compileOnly 'androidx.annotation:annotation:1.7.1'
+}

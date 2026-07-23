@@ -1,0 +1,8 @@
+# JitPack build configuration.
+# https://docs.jitpack.io/android/
+jdk:
+  - openjdk17
+before_install:
+  - echo "Building xbridge-android multi-module project"
+install:
+  - ./gradlew :xbridge-core:build :xbridge-flutter:build -x test

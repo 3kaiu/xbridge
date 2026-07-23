@@ -4,6 +4,12 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "sideEffects": false,
   "description": "Open-source, zero-business-coupling cross-platform bridge SDK for H5.",
   "keywords": [
@@ -14,9 +20,20 @@
     "h5"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/3kaiu/xbridge.git",
+    "directory": "packages/xbridge-js"
+  },
+  "homepage": "https://github.com/3kaiu/xbridge/tree/main/packages/xbridge-js",
+  "bugs": {
+    "url": "https://github.com/3kaiu/xbridge/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
   "scripts": {
     "build": "tsc",
