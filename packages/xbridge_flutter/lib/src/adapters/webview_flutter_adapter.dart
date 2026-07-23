@@ -1,83 +1,119 @@
+import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:xbridge_protocol/xbridge_protocol.dart';
 
 import '../bridge_controller.dart';
 
 /// Adapter that wires a `webview_flutter` [WebViewController] into a
 /// [BridgeController].
-///
-/// Attach once after creating the controller:
-///
-/// ```dart
-/// final controller = WebViewController();
-/// final bridge = BridgeController();
-/// WebViewFlutterBridgeAdapter().attach(controller, bridge);
-/// ```
-///
-/// The adapter:
-/// * Registers a JavaScript channel named [channelName] (default `XBridge`)
-///   whose `onMessageReceived` forwards `msg.message` to
-///   `bridge.handleRawMessage`.
-/// * Attaches the controller on the bridge so JS callbacks can be injected.
-/// * Installs a no-op `window.__XBridge__` bootstrap so the H5 SDK
-///   does not crash if it calls `resolve`/`reject` before Flutter is ready —
-///   the real resolve/reject are injected lazily by [BridgeJavaScriptTransport]
-///   on each response.
-/// * Wires a `NavigationDelegate` `onPageFinished` callback that fetches the
-///   current URL and calls `bridge.setCurrentOrigin(url)` so the security
-///   policy has an up-to-date origin without manual wiring.
 class WebViewFlutterBridgeAdapter {
   WebViewController? _attachedController;
-
-  /// The JavaScript bootstrap injected on attach. Keeps the H5 side from
-  /// throwing when it references the global before Flutter has responded.
-  static const String _bootstrapScript = ''
-      'window.__XBridge__=window.__XBridge__||{'
-      'resolve:function(){},'
-      'reject:function(){}'
-      '};';
+  BridgeController? _attachedBridge;
 
   void attach(
     WebViewController controller,
     BridgeController bridge, {
     String channelName = 'XBridge',
   }) {
-    bridge.attachWebViewController(controller);
+    bridge.setTransport(_WebViewFlutterTransport(controller));
     controller.addJavaScriptChannel(
       channelName,
       onMessageReceived: (JavaScriptMessage message) {
-        // Fire-and-forget: handleRawMessage is async and self-contained.
         bridge.handleRawMessage(message.message);
       },
     );
 
-    // Populate the current origin whenever a page finishes loading so the
-    // security policy can make origin-based decisions automatically.
     controller.setNavigationDelegate(
       NavigationDelegate(
         onPageFinished: (_) async {
           final url = await controller.currentUrl();
-          bridge.setCurrentOrigin(url);
+          bridge.setCurrentOrigin(_extractOrigin(url));
         },
       ),
     );
 
-    // Best-effort bootstrap; ignore errors (page not ready yet).
-    controller.runJavaScript(_bootstrapScript).catchError((_) {});
+    // Bootstrap standard JS environment (window.XBridge, window.__XBridge__)
+    controller.runJavaScript(BridgeScriptBuilder.unifiedBootstrap).catchError((error) {
+      debugPrint('[XBridge] WARNING: failed to inject bridge bootstrap JS: $error. '
+          'Bridge responses will not reach H5 until the page is reloaded.');
+    });
 
     _attachedController = controller;
+    _attachedBridge = bridge;
   }
 
-  /// Removes the JavaScript channel registered by [attach] and clears the
-  /// reference to the controller. Call this when the WebView is being disposed
-  /// to prevent a leaked channel (and leaked JS → Dart callbacks).
   void detach({String channelName = 'XBridge'}) {
     final controller = _attachedController;
     if (controller != null) {
       controller.removeJavaScriptChannel(channelName);
-      // Reset the navigation delegate so the onPageFinished callback no
-      // longer fires into a disposed bridge.
       controller.setNavigationDelegate(NavigationDelegate());
     }
+    // Clear the transport on the bridge so post-detach calls fail loudly
+    // instead of silently operating on a detached WebView.
+    _attachedBridge?.setTransport(_DisposedTransport());
     _attachedController = null;
+    _attachedBridge = null;
+  }
+}
+
+/// Extracts the origin (scheme://host[:port]) from a full URL.
+/// Returns `null` if the URL is null or cannot be parsed.
+String? _extractOrigin(String? url) {
+  if (url == null || url.isEmpty) return null;
+  try {
+    final uri = Uri.parse(url);
+    if (!uri.hasScheme || uri.host.isEmpty) return null;
+    final origin = '${uri.scheme}://${uri.host}'
+        '${uri.hasPort ? ':${uri.port}' : ''}';
+    return origin;
+  } catch (_) {
+    return null;
+  }
+}
+
+class _WebViewFlutterTransport implements BridgeTransport {
+  _WebViewFlutterTransport(this._controller);
+
+  final WebViewController _controller;
+
+  @override
+  Future<void> resolve(String id, dynamic result) =>
+      _controller.runJavaScript(BridgeScriptBuilder.buildResolveScript(id, result));
+
+  @override
+  Future<void> reject(String id, BridgeError error) =>
+      _controller.runJavaScript(BridgeScriptBuilder.buildRejectScript(id, error.toJson()));
+
+  @override
+  Future<void> dispatchEvent(BridgeEvent event) =>
+      _controller.runJavaScript(BridgeScriptBuilder.buildEventScript(event));
+
+  @override
+  Future<void> callH5Handler(String id, String method, dynamic params) =>
+      _controller.runJavaScript(BridgeScriptBuilder.buildCallH5Script(id, method, params));
+}
+
+/// Transport that throws on all calls — used after `detach` to ensure
+/// callers get a clear error instead of silently operating on a detached
+/// WebView.
+class _DisposedTransport implements BridgeTransport {
+  @override
+  Future<void> resolve(String id, dynamic result) async {
+    throw StateError('[XBridge] WebView adapter has been detached');
+  }
+
+  @override
+  Future<void> reject(String id, BridgeError error) async {
+    throw StateError('[XBridge] WebView adapter has been detached');
+  }
+
+  @override
+  Future<void> dispatchEvent(BridgeEvent event) async {
+    throw StateError('[XBridge] WebView adapter has been detached');
+  }
+
+  @override
+  Future<void> callH5Handler(String id, String method, dynamic params) async {
+    throw StateError('[XBridge] WebView adapter has been detached');
   }
 }

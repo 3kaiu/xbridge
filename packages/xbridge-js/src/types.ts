@@ -48,9 +48,10 @@ export interface XBridgeEvent {
 }
 
 /**
- * Structured error. `code` is numeric per JSON-RPC 2.0 convention; the Flutter
- * side historically uses a String code (e.g. `'BRIDGE_ERROR'`), and the H5
- * dispatcher treats the field loosely so either form round-trips.
+ * Structured error. `code` is numeric per JSON-RPC 2.0 convention, but the
+ * Flutter side may send a String code (e.g. `'BRIDGE_METHOD_FORBIDDEN'`).
+ * To preserve semantic information across the bridge, the H5 layer accepts
+ * both `number` and `string` codes and forwards them as-is.
  */
 export interface XBridgeError {
   code: number | string;

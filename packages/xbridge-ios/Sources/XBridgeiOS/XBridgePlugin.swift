@@ -17,8 +17,13 @@ import Flutter
 /// the Rust `xbridge_core` C-ABI) and security policy management.
 ///
 /// The plugin is intentionally business-free. It does not know about
-/// `getToken`, `PaymentService`, or any other domain method. The app sets a
+/// any domain-specific method. The app sets a
 /// delegate that forwards to its existing bridge handler.
+///
+/// - Note: This class is `@MainActor` to ensure thread-safe access to
+///   `securityPolicy` and `origin`. Flutter's `MethodChannel` delivers
+///   calls on the main thread by default, so this alignment is natural.
+@MainActor
 public class XBridgePlugin: NSObject, FlutterPlugin {
 
     // MARK: - Constants
@@ -26,6 +31,9 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
     /// The MethodChannel name that Flutter's `BridgeController` sends
     /// fallback (unregistered) methods to.
     public static let channelName = "xbridge/native_fallback"
+
+    /// The MethodChannel name for Native → Flutter/H5 reverse calls.
+    public static let reverseChannelName = "xbridge/native_reverse"
 
     // MARK: - State
 
@@ -35,7 +43,7 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
 
     /// The active security policy (defense-in-depth; the primary gate is on
     /// the Flutter side via `WebViewBridgePolicy`).
-    public var securityPolicy: XBridgeSecurityPolicy = .allowAll()
+    public var securityPolicy: XBridgeSecurityPolicy = .denyAll()
 
     /// The current page origin, set by the host app when it observes
     /// navigation. Used for defense-in-depth security checks on the
@@ -44,27 +52,46 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
 
     /// The FlutterMethodChannel bound to this plugin instance.
     private var channel: FlutterMethodChannel?
+    private var reverseChannel: FlutterMethodChannel?
+
+    // MARK: - Reverse calls (Native → Flutter / H5)
+
+    /// Invoke a method registered on Flutter or H5 asynchronously from Native.
+    public func callH5(method: String, params: Any?, result: FlutterResult? = nil) {
+        reverseChannel?.invokeMethod(method, arguments: params, result: result)
+    }
+
+    /// Broadcast an event from Native to H5.
+    public func pushEvent(method: String, params: Any?) {
+        reverseChannel?.invokeMethod("__event__:\(method)", arguments: params)
+    }
 
     // MARK: - FlutterPlugin
 
     /// Register this plugin with the Flutter registrar.
     ///
-    /// Call this from your `AppDelegate` or `FlutterViewController`:
-    /// ```swift
-    /// XBridgePlugin.register(with: registrar)
-    /// ```
+    /// - Note: This method is `@MainActor`-isolated because `XBridgePlugin`
+    ///   is a `@MainActor` class. Flutter's registrar typically calls on the
+    ///   main thread, so this alignment is natural.
+    @MainActor
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
             name: channelName,
             binaryMessenger: registrar.messenger()
         )
+        let reverseChannel = FlutterMethodChannel(
+            name: reverseChannelName,
+            binaryMessenger: registrar.messenger()
+        )
         let instance = XBridgePlugin()
         instance.channel = channel
+        instance.reverseChannel = reverseChannel
         registrar.addMethodCallDelegate(instance, channel: channel)
     }
 
     /// Register with a pre-configured channel (for testing or custom
     /// messenger setups).
+    @MainActor
     public static func register(
         with registrar: FlutterPluginRegistrar,
         nativeBridge: XBridgeNativeBridge
@@ -73,8 +100,13 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
             name: channelName,
             binaryMessenger: registrar.messenger()
         )
+        let reverseChannel = FlutterMethodChannel(
+            name: reverseChannelName,
+            binaryMessenger: registrar.messenger()
+        )
         let instance = XBridgePlugin()
         instance.channel = channel
+        instance.reverseChannel = reverseChannel
         instance.nativeBridge = nativeBridge
         registrar.addMethodCallDelegate(instance, channel: channel)
         return instance
@@ -118,19 +150,9 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
             return
         }
 
-        // Dispatch to main thread if the delegate requires it.
-        // We call directly if already on main; otherwise dispatch async.
-        // The delegate implementation decides its own threading needs.
-        if Thread.isMainThread {
-            let value = nativeBridge.invoke(method: method, params: params)
-            result(value)
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                let value = self.nativeBridge?.invoke(method: method, params: params)
-                result(value)
-            }
-        }
+        // With @MainActor, this method is already isolated to the main thread.
+        let value = nativeBridge.invoke(method: method, params: params)
+        result(value)
     }
 
     // MARK: - Control call dispatch
@@ -175,6 +197,12 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
                     ))
                 }
             }
+
+        case "xbridge.isWsRunning":
+            result(LocalWsServerBridge.shared.isRunning)
+
+        case "xbridge.getWsEndpoint":
+            result(LocalWsServerBridge.shared.endpoint)
 
         // ── Security policy push (defense-in-depth) ──
         case "xbridge.setSecurityPolicy":

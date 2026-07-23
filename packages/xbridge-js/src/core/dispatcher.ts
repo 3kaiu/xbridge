@@ -69,8 +69,25 @@ export class Dispatcher {
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
     onTimeout?: (id: string, method: string, timeoutMs: number) => void,
   ): void {
+    // If an entry with the same id already exists (extremely unlikely with
+    // UUID, but possible with the fallback generator or a host echoing a
+    // duplicate id), reject it before overwriting.
+    const existing = this.pending.get(id);
+    if (existing !== undefined) {
+      if (existing.timer !== undefined) {
+        clearTimeout(existing.timer);
+      }
+      this.pending.delete(id);
+      existing.reject({
+        code: -32000,
+        message: `XBridge call '${existing.method}' superseded by duplicate id`,
+      });
+    }
+
     let timer: ReturnType<typeof setTimeout> | undefined;
-    if (timeoutMs > 0) {
+    // Guard against NaN/Infinity: Number.isFinite returns false for NaN,
+    // Infinity, and non-numbers, so such values get treated as "no timeout".
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       // Bind the timeout handler once per registration. The closure captures
       // only `id` + `method` + `timeoutMs` — no per-message allocation.
       const method = entry.method;

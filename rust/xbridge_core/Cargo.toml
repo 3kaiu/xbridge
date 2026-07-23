@@ -10,7 +10,7 @@ repository = "https://github.com/xbridge/xbridge"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 log = "0.4"
@@ -20,5 +20,4 @@ thiserror = "1"
 
 [dev-dependencies]
 env_logger = "0.11"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
 tokio-tungstenite = { version = "0.24", features = ["connect"] }

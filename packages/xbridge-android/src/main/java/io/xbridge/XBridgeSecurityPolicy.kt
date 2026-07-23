@@ -19,6 +19,9 @@ data class XBridgeSecurityPolicy(
     val allowAll: Boolean = false,
 ) {
     companion object {
+        /** Deny all origins — secure default. Use allowAll() for development only. */
+        fun denyAll(): XBridgeSecurityPolicy = XBridgeSecurityPolicy(allowedOrigins = emptySet(), allowAll = false)
+
         /** Allow all origins — development convenience. */
         fun allowAll(): XBridgeSecurityPolicy = XBridgeSecurityPolicy(allowAll = true)
 
@@ -34,10 +37,40 @@ data class XBridgeSecurityPolicy(
     /**
      * Returns `true` if [origin] is permitted by this policy.
      * An empty allowlist with `allowAll = false` denies everything.
+     *
+     * Origin comparison is case-insensitive and ignores trailing slashes
+     * and default ports (80 for http, 443 for https) to avoid false
+     * rejections from minor URL formatting differences.
      */
     fun allows(origin: String?): Boolean {
         if (allowAll) return true
         if (origin == null) return false
-        return allowedOrigins.contains(origin)
+        // Reject "null" origin (sandboxed iframes, data: URIs) and wildcard "*"
+        // to match the Rust WS server's security checks.
+        if (origin == "null" || origin == "*") return false
+        val normalized = normalizeOrigin(origin)
+        return allowedOrigins.any { normalizeOrigin(it) == normalized }
+    }
+
+    /**
+     * Normalize an origin string: lowercase, strip trailing slash, strip
+     * default ports (443 for https, 80 for http).
+     */
+    private fun normalizeOrigin(origin: String): String {
+        var o = origin.trim().lowercase()
+        // Strip trailing slash
+        while (o.endsWith("/")) {
+            o = o.dropLast(1)
+        }
+        // Strip default ports
+        o = o.removeSuffix(":443")
+        if (o.startsWith("https://")) {
+            o = o.removePrefix("https://")
+            o = "https://${o.removeSuffix(":443")}"
+        } else if (o.startsWith("http://")) {
+            o = o.removePrefix("http://")
+            o = "http://${o.removeSuffix(":80")}"
+        }
+        return o
     }
 }

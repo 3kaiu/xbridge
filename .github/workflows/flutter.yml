@@ -7,11 +7,13 @@ on:
     paths:
       - 'packages/xbridge_flutter/**'
       - 'packages/xbridge_platform_interface/**'
+      - 'packages/xbridge_protocol/**'
       - '.github/workflows/flutter.yml'
   pull_request:
     paths:
       - 'packages/xbridge_flutter/**'
       - 'packages/xbridge_platform_interface/**'
+      - 'packages/xbridge_protocol/**'
       - '.github/workflows/flutter.yml'
 
 defaults:
@@ -45,12 +47,14 @@ jobs:
 
       - name: Run tests (xbridge_flutter)
         run: flutter test
-        continue-on-error: true
+
+      - name: Run tests (xbridge_protocol)
+        working-directory: packages/xbridge_protocol
+        run: dart test
 
       - name: Run tests (xbridge_platform_interface)
         working-directory: packages/xbridge_platform_interface
         run: flutter test
-        continue-on-error: true
 
       - name: Dry-run pub publish
         run: flutter pub publish --dry-run

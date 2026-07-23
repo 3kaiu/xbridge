@@ -20,6 +20,8 @@ public enum XBridgeWsError: Error, LocalizedError {
     case startFailed
     /// The server failed to stop (Rust returned -1).
     case stopFailed
+    /// The requested port is outside the valid range (0...65535).
+    case invalidPort
 
     public var errorDescription: String? {
         switch self {
@@ -29,6 +31,8 @@ public enum XBridgeWsError: Error, LocalizedError {
             return "Local WebSocket server failed to start."
         case .stopFailed:
             return "Local WebSocket server failed to stop."
+        case .invalidPort:
+            return "Port must be in the range 0...65535."
         }
     }
 }
@@ -58,6 +62,19 @@ public final class LocalWsServerBridge {
 
     private init() {}
 
+    /// Lock protecting `cachedPort` against concurrent start/stop races.
+    private let portLock = NSLock()
+
+    /// Cached port of the running WS server, or `nil` if not running.
+    /// Access is synchronized via `portLock` because `start`/`stop` run on
+    /// a background queue while `isRunning`/`endpoint` may be read from any
+    /// thread.
+    private var _cachedPort: Int?
+    private var cachedPort: Int? {
+        get { portLock.lock(); defer { portLock.unlock() }; return _cachedPort }
+        set { portLock.lock(); defer { portLock.unlock() }; _cachedPort = newValue }
+    }
+
     // MARK: - Public API
 
     /// Start the local WebSocket server on `127.0.0.1:port`.
@@ -66,17 +83,22 @@ public final class LocalWsServerBridge {
     ///   - port: The desired port. Use `0` for OS-assigned.
     ///   - completion: Called with `.success(actualPort)` or `.failure(error)`.
     public func start(port: Int = 0, completion: @escaping (Result<Int, Error>) -> Void) {
+        // Validate port range before casting to UInt16.
+        guard port >= 0, port <= 65535 else {
+            completion(.failure(XBridgeWsError.invalidPort))
+            return
+        }
+
         // Dispatch to a background queue to avoid blocking the caller,
         // since the Rust side uses `blocking_lock` internally.
         DispatchQueue.global(qos: .utility).async {
             #if canImport(XBridgeCoreC)
             let result = xbridge_ws_start(UInt16(port))
-            if result >= 0 {
-                DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                if result >= 0 {
+                    self.cachedPort = Int(result)
                     completion(.success(Int(result)))
-                }
-            } else {
-                DispatchQueue.main.async {
+                } else {
                     completion(.failure(XBridgeWsError.startFailed))
                 }
             }
@@ -98,6 +120,7 @@ public final class LocalWsServerBridge {
             let result = xbridge_ws_stop()
             DispatchQueue.main.async {
                 if result == 0 {
+                    self.cachedPort = nil
                     completion(.success(()))
                 } else {
                     completion(.failure(XBridgeWsError.stopFailed))
@@ -111,26 +134,32 @@ public final class LocalWsServerBridge {
         }
     }
 
+    // MARK: - State queries
+
+    /// Returns `true` when the local WebSocket server is currently running.
+    public var isRunning: Bool {
+        cachedPort != nil
+    }
+
+    /// Returns `ws://127.0.0.1:<port>` when running, or `nil` when stopped.
+    public var endpoint: String? {
+        guard let port = cachedPort else { return nil }
+        return "ws://127.0.0.1:\(port)"
+    }
+
     // MARK: - Binary callback (documented limitation)
 
     /// Register a binary frame callback.
     ///
-    /// - Note: This is currently a **documented limitation**. Wiring a Swift
-    ///   closure to a C `extern "C" fn` pointer requires a persistent
-    ///   trampoline that bridges the C calling convention to Swift's
-    ///   closure model. This is non-trivial and left as a future enhancement.
-    ///   For now, binary frames received by the Rust server are consumed
-    ///   server-side (the Rust `subscribe_receiver` API). Apps that need
-    ///   binary data should connect to `ws://127.0.0.1:port` directly from
-    ///   JavaScript rather than relying on a native callback.
+    /// - Warning: This is currently a **documented limitation**. The method
+    ///   logs a warning and does nothing — binary frames received by the Rust
+    ///   server are consumed server-side. Apps that need binary data should
+    ///   connect to `ws://127.0.0.1:port` directly from JavaScript.
     public func setBinaryCallback(_ callback: @escaping (Data) -> Void) {
-        // TODO: Implement a C-compatible trampoline using a persistent
-        // global closure context. The Rust side expects:
-        //   extern "C" fn(*const u8, usize)
-        // which cannot be a Swift closure directly. Options:
-        //   1. Use @_cdecl to expose a Swift function as a C symbol.
-        //   2. Store the Swift closure in a global and call it from the
-        //      @_cdecl trampoline.
-        // This is left as a documented enhancement.
+        #if DEBUG
+        print("[XBridge] WARNING: setBinaryCallback is not yet implemented. "
+            + "Binary frames are consumed by the Rust server. "
+            + "Connect to ws://127.0.0.1:<port> directly from JavaScript instead.")
+        #endif
     }
 }

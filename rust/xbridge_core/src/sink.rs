@@ -97,6 +97,8 @@ impl SinkRegistry {
     /// For multiple subscribers, all but the last get clones; the last gets
     /// the original `Vec`.
     pub(crate) fn publish(&self, bytes: Vec<u8>) {
+        // Lock the registry, clone the Vec of senders, then release the lock
+        // before iterating so try_send calls are never blocked by the lock.
         let sinks = match self.sinks.lock() {
             Ok(guard) => guard.clone(),
             Err(p) => {
@@ -114,22 +116,20 @@ impl SinkRegistry {
             .filter(|(_, tx)| !tx.is_closed())
             .map(|(i, _)| i)
             .collect();
-        let mut dead = Vec::new();
+
+        let mut bytes = Some(bytes);
 
         // Track which is the last live sender index.
         let last_live = live_indices.last().copied();
 
-        let mut bytes = Some(bytes);
         for (i, tx) in sinks.iter().enumerate() {
             // Determine if this is the last live sender — if so, move bytes.
             let is_last_live = Some(i) == last_live;
             let payload: Vec<u8> = if is_last_live {
                 // Move original bytes out — no clone for the final live subscriber.
-                // Use Option::take so we don't leave an empty Vec that could
-                // accidentally be cloned by a later iteration.
                 match bytes.take() {
                     Some(b) => b,
-                    None => continue, // already consumed — skip dead/extra senders
+                    None => continue,
                 }
             } else {
                 // Clone for non-last subscribers.
@@ -141,19 +141,17 @@ impl SinkRegistry {
                     warn!("subscriber {i} channel full, dropping frame");
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                    dead.push(i);
+                    // Will be pruned below.
                 }
             }
         }
 
-        if !dead.is_empty() && self.sinks.lock().map(|mut v| {
-            // prune dead senders (iterate descending so indices stay valid)
-            for &i in dead.iter().rev() {
-                if i < v.len() {
-                    v.remove(i);
-                }
-            }
-        }).is_err() {
+        // Prune dead senders by re-checking is_closed() under the lock.
+        // Using `retain` avoids the TOCTOU index-shift bug that would occur
+        // with index-based `remove`.
+        if let Ok(mut v) = self.sinks.lock() {
+            v.retain(|tx| !tx.is_closed());
+        } else {
             warn!("failed to prune dead sinks (mutex)");
         }
     }

@@ -4,6 +4,14 @@
 //! JSON-encoded text frames. The **data** plane is raw binary `Vec<u8>` with
 //! zero encoding overhead — see [`crate::server`] and PRD §1.2.4.
 //!
+//! ## Naming: `action` vs `method`
+//!
+//! Control messages use the field name `action` (not `method`) **by design**.
+//! The JSON-RPC bridge-call protocol uses `method` on the data plane. Using a
+//! different field name on the control plane prevents a control frame from
+//! being misinterpreted as a data-plane bridge call (or vice versa) when both
+//! arrive as text frames on the same WebSocket connection.
+//!
 //! These structs are intentionally schema-light: `params` is a
 //! `serde_json::Value` so any business-specific control vocabulary can be
 //! layered on top by downstream crates WITHOUT `xbridge_core` knowing about

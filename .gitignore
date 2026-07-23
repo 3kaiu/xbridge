@@ -19,3 +19,12 @@ target/
 .idea/
 .vscode/
 *.iml
+
+# AI tool local configs
+.agent/
+.agents/
+.claude/
+.cursor/
+.kimi-code/
+.opencode/
+.trellis/

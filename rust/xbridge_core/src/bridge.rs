@@ -31,6 +31,10 @@ struct GlobalState {
     server: Option<RunningServer>,
     /// Raw binary callback (JNI/Swift). Stored as an `Option<extern "C" fn>`.
     binary_cb: Option<extern "C" fn(*const u8, usize)>,
+    /// Handle to the currently running callback-drain task, if any.
+    /// Aborted before a new drain is spawned so multiple
+    /// `xbridge_ws_set_binary_callback` calls don't accumulate tasks.
+    drain_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 static GLOBAL: OnceLock<Mutex<GlobalState>> = OnceLock::new();
@@ -44,6 +48,7 @@ fn global() -> &'static Mutex<GlobalState> {
                 .expect("failed to build xbridge tokio runtime"),
             server: None,
             binary_cb: None,
+            drain_task: None,
         })
     })
 }
@@ -53,22 +58,28 @@ fn global() -> &'static Mutex<GlobalState> {
 /// is already inside a tokio runtime.
 ///
 /// - If the caller is NOT inside a tokio runtime, `runtime.block_on(fut)`
-///   is safe.
-/// - If the caller IS inside a tokio runtime, use `block_in_place` to
-///   convert the current worker thread into a blocking thread, then
-///   `Handle::block_on` on the dedicated runtime. This avoids the panic
-///   that `Runtime::block_on` would cause when called from within a
-///   runtime context.
+///   is safe and straightforward.
+/// - If the caller IS inside a *different* tokio runtime, we cannot use
+///   `block_in_place` (it panics on non-worker threads or on a foreign
+///   runtime's worker). Instead we use the current runtime's
+///   `spawn_blocking` to run on a blocking-pool thread where no runtime
+///   context is active, then drive the future on the dedicated runtime
+///   from there via an owned `Handle`.
 fn block_on_dedicated<F, T>(runtime: &tokio::runtime::Runtime, fut: F) -> T
 where
-    F: std::future::Future<Output = T>,
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
 {
     match tokio::runtime::Handle::try_current() {
-        // We are inside a tokio runtime — block_in_place lets us
-        // synchronously block, then we drive the future on the
-        // dedicated runtime's handle.
-        Ok(_) => {
-            tokio::task::block_in_place(|| runtime.handle().block_on(fut))
+        // We are inside a tokio runtime — use spawn_blocking to escape
+        // the runtime context, then block on the dedicated runtime.
+        Ok(handle) => {
+            let dedicated = runtime.handle().clone();
+            handle.block_on(async {
+                tokio::task::spawn_blocking(move || dedicated.block_on(fut))
+                    .await
+                    .expect("spawn_blocking panicked")
+            })
         }
         // Not inside a tokio runtime — direct block_on is safe.
         Err(_) => runtime.block_on(fut),
@@ -120,7 +131,8 @@ pub extern "C" fn xbridge_ws_start(port: u16) -> i32 {
     // If a binary callback was registered before start, wire it into the
     // server's sink by spawning a drain task.
     if let Some(cb) = state.binary_cb {
-        spawn_callback_drain(&state.runtime, &server, cb);
+        let handle = spawn_callback_drain(state.runtime.handle(), &server, cb);
+        state.drain_task = Some(handle);
     }
 
     let port = server.actual_port() as i32;
@@ -147,6 +159,19 @@ pub extern "C" fn xbridge_ws_stop() -> i32 {
             return -1;
         }
     };
+
+    // Abort the callback-drain task before shutting down the server so it
+    // doesn't linger after the sink is gone. We abort but do NOT await the
+    // task while holding the global mutex — the drain task may be blocked
+    // inside a synchronous C callback that cannot be preempted. Aborting
+    // cancels the `recv().await` but the JoinHandle won't resolve until the
+    // current callback returns. Waiting for it while holding the mutex
+    // would deadlock if the callback itself tries to acquire the mutex
+    // (e.g. via another FFI call). Instead, just abort and drop the handle.
+    if let Some(handle) = state.drain_task.take() {
+        handle.abort();
+        // Do not await — see comment above.
+    }
 
     let shutdown_result = block_on_dedicated(&state.runtime, async move { server.shutdown().await });
     match shutdown_result {
@@ -179,10 +204,29 @@ pub unsafe extern "C" fn xbridge_ws_set_binary_callback(
 
     state.binary_cb = cb;
 
+    // Abort any previous drain task so multiple calls don't accumulate
+    // concurrent drainers. Do NOT await the aborted task while holding the
+    // global mutex — the old drain task may be blocked inside a synchronous
+    // C callback. Just abort and drop the handle.
+    if let Some(old) = state.drain_task.take() {
+        old.abort();
+    }
+
     // If the server is already running, wire the callback by spawning a
-    // drain task on the existing server.
-    if let (Some(cb), Some(server)) = (cb, state.server.as_ref()) {
-        spawn_callback_drain(&state.runtime, server, cb);
+    // fresh drain task. If the server is NOT running, the callback is stored
+    // and will be wired when xbridge_ws_start is called next. The caller
+    // MUST ensure the function pointer remains valid until then.
+    if let Some(cb) = cb {
+        if state.server.is_none() {
+            warn!("xbridge_ws_set_binary_callback: server not running — callback stored and will be wired on next start. Ensure the function pointer remains valid.");
+        }
+        let runtime_handle = state.runtime.handle().clone();
+        let handle = state.server.as_ref().map(|server| {
+            spawn_callback_drain(&runtime_handle, server, cb)
+        });
+        if let Some(h) = handle {
+            state.drain_task = Some(h);
+        }
     }
 
     0
@@ -193,22 +237,41 @@ pub unsafe extern "C" fn xbridge_ws_set_binary_callback(
 /// by the `Vec`; we pass a pointer to its contents and let the `Vec` drop
 /// after the callback returns — so the native side must not retain the
 /// pointer past return.
+///
+/// The `DataSink` is moved into the task so the sender half stays alive
+/// for the duration of the drain. Without this, the registry's clone
+/// would keep the channel open, but dropping the DataSink is harmless
+/// because the registry also holds a clone.
 fn spawn_callback_drain(
-    runtime: &tokio::runtime::Runtime,
+    runtime: &tokio::runtime::Handle,
     server: &RunningServer,
     cb: extern "C" fn(*const u8, usize),
-) {
-    let (_sink, mut rx) = server.subscribe_receiver();
+) -> tokio::task::JoinHandle<()> {
+    let (sink, mut rx) = server.subscribe_receiver();
     runtime.spawn(async move {
+        // Keep `sink` alive for the lifetime of this task. When the task
+        // is aborted or completes, `sink` drops and the channel's sender
+        // count decreases. The registry still holds its clone, so the
+        // channel only closes when `rx` is also dropped (which happens
+        // here when the task exits).
+        let _sink = sink;
         while let Some(bytes) = rx.recv().await {
-            let len = bytes.len();
-            let ptr = bytes.as_ptr();
-            // Invoke the C callback. The pointer is valid until this fn
-            // returns because `bytes` still owns the allocation.
-            cb(ptr, len);
-            // `bytes` drops here, freeing the allocation.
+            // Invoke the C callback via `spawn_blocking` so a slow or
+            // blocking native callback doesn't starve the tokio runtime.
+            // `bytes` is moved into the blocking closure; the pointer
+            // and length are computed inside the closure so they remain
+            // valid for the duration of `cb`. After `cb` returns, `bytes`
+            // is dropped, freeing the allocation.
+            tokio::task::spawn_blocking(move || {
+                let len = bytes.len();
+                let ptr = bytes.as_ptr();
+                cb(ptr, len);
+                // `bytes` drops here, freeing the allocation.
+            })
+            .await
+            .ok();
         }
-    });
+    })
 }
 
 /// Convenience Rust-native helper exposed for tests / embedded use that
@@ -216,4 +279,34 @@ fn spawn_callback_drain(
 /// caller's runtime. Equivalent to [`LocalWsServer::start`].
 pub async fn start_server(port: u16) -> Result<RunningServer, WsError> {
     LocalWsServer::new().start(port).await
+}
+
+// ---------------------------------------------------------------------------
+// JNI-named wrappers for Android
+//
+// Android's `System.loadLibrary` + `external fun` resolves symbols by the
+// JNI naming convention: `Java_<package>_<class>_<method>`. These wrappers
+// delegate to the canonical C-ABI functions above so the Kotlin side can
+// call `nativeStart`/`nativeStop` without a separate C/C++ JNI shim.
+// ---------------------------------------------------------------------------
+
+/// JNI bridge for `LocalWsServerJni.nativeStart(Int): Int`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_io_xbridge_ws_LocalWsServerJni_nativeStart(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    port: u16,
+) -> i32 {
+    xbridge_ws_start(port)
+}
+
+/// JNI bridge for `LocalWsServerJni.nativeStop(): Int`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_io_xbridge_ws_LocalWsServerJni_nativeStop(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) -> i32 {
+    xbridge_ws_stop()
 }

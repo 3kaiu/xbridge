@@ -23,7 +23,7 @@ import org.json.JSONObject
  *
  * 1. If the current thread IS the main thread, invoke the delegate directly.
  * 2. If off-main, post to the main thread and block with a [CountDownLatch]
- *    until the result (or exception) is captured. The latch has a 5-second
+ *    until the result (or exception) is captured. The latch has a 3-second
  *    timeout to avoid infinite hangs.
  *
  * ## Return format
@@ -46,7 +46,7 @@ class XBridgeSyncInterface(
 
     companion object {
         private const val TAG = "XBridgeSync"
-        private const val SYNC_TIMEOUT_SECONDS = 3L
+        private const val SYNC_TIMEOUT_SECONDS = 1L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -54,10 +54,19 @@ class XBridgeSyncInterface(
     /**
      * Inject this interface into [webView] under the name `XBridgeSync`.
      * H5 code calls `window.XBridgeSync.callSync(method, paramsJson)`.
+     *
+     * **Security note**: Android's `addJavascriptInterface` exposes the
+     * object to **all frames**, including subframes and iframes. Unlike
+     * iOS's `forMainFrameOnly: true`, there is no API to restrict to the
+     * main frame. The [securityPolicyProvider] and [originProvider] checks
+     * in [callSync] are the mitigation — they evaluate the main frame's
+     * origin (set via `XBridgePluginRegistry.setOrigin`). Apps should also
+     * override `WebViewClient.shouldOverrideUrlLoading` to block navigation
+     * to untrusted origins.
      */
     fun attach(webView: WebView) {
         webView.addJavascriptInterface(this, "XBridgeSync")
-        Log.i(TAG, "XBridgeSync interface attached to WebView")
+        Log.i(TAG, "XBridgeSync interface attached to WebView (exposed to all frames — origin check is the mitigation)")
     }
 
     /**
@@ -79,6 +88,11 @@ class XBridgeSyncInterface(
      */
     @JavascriptInterface
     fun callSync(method: String, paramsJson: String): String {
+        // Validate method before any other processing.
+        if (method.isBlank()) {
+            return errorJson("INVALID_METHOD", "Method name must be a non-empty string")
+        }
+
         val bridge = nativeBridgeProvider()
         if (bridge == null) {
             return errorJson("NO_NATIVE_BRIDGE", "XBridgeNativeBridge not set")
@@ -219,7 +233,7 @@ class XBridgeSyncInterface(
         return when (value) {
             is org.json.JSONObject -> jsonToMap(value)
             is org.json.JSONArray -> jsonToList(value)
-            is org.json.JSONObject.NULL -> null
+            org.json.JSONObject.NULL -> null
             else -> value
         }
     }

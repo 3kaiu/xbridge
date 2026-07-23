@@ -28,6 +28,14 @@ import android.util.Log
  *
  * or, for app consumers, added to the app's `jniLibs` directory.
  *
+ * ## JNI Symbol Resolution
+ *
+ * The Rust crate exports JNI-named wrapper functions
+ * (`Java_io_xbridge_ws_LocalWsServerJni_nativeStart` and
+ * `..._nativeStop`) that delegate to the canonical `xbridge_ws_start` /
+ * `xbridge_ws_stop` C-ABI functions. This means `System.loadLibrary`
+ * + `external fun` resolves correctly without a separate C/C++ JNI shim.
+ *
  * ## Binary Callback Limitation (known)
  *
  * The Rust `xbridge_ws_set_binary_callback` expects a raw C function

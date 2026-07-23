@@ -6,9 +6,9 @@
 //!    No off-device traffic can reach the server.
 //! 2. **Origin allowlist**: the WebSocket handshake `Origin` header is checked
 //!    against a set of trusted origins. Allowed defaults: `http://127.0.0.1`,
-//!    `http://localhost`, and `file://` (local file:// WebViews are common in
-//!    hybrid apps). Anything else is rejected with HTTP 403 before the WS
-//!    upgrade completes.
+//!    `http://localhost`. `file://` is NOT included by default — add it
+//!    explicitly via `with_allowed_origins` if needed. Anything else is
+//!    rejected with HTTP 403 before the WS upgrade completes.
 //! 3. **Connection cap**: [`MAX_CONCURRENT_CONNECTIONS`] bounds concurrency;
 //!    excess connections are dropped immediately.
 
@@ -165,7 +165,7 @@ impl LocalWsServer {
 
         Ok(RunningServer {
             actual_port,
-            join_handle: join,
+            join_handle: Some(join),
             shutdown_notify,
             registry,
             sink_capacity,
@@ -179,9 +179,7 @@ impl LocalWsServer {
                 r.publish(bytes);
             })
             .on_text(move |text: String| {
-                debug!("ws text frame (control): {text}");
-                // Control frames are JSON; a full decode/route lives in the
-                // higher layer. Here we just log. The data plane is binary.
+                debug!("ws text frame received: {text}");
             })
             .on_connect(|| {
                 debug!("ws connection accepted");
@@ -198,20 +196,52 @@ struct ConnGuard(Arc<AtomicUsize>);
 
 impl Drop for ConnGuard {
     fn drop(&mut self) {
-        // Use atomic fetch_sub — no async, no spawn, no lock needed.
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        // Saturating decrement: if the counter is already 0 (shouldn't happen
+        // in normal operation), do nothing instead of wrapping to usize::MAX.
+        loop {
+            let current = self.0.load(Ordering::SeqCst);
+            if current == 0 {
+                break;
+            }
+            match self.0.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
     }
 }
 
 /// A running local WS server. Hold this value to keep the server alive; drop
 /// or call [`shutdown`](Self::shutdown) to stop.
+///
+/// # Drop behavior
+///
+/// Dropping `RunningServer` without calling `shutdown()` will trigger the
+/// `Drop` implementation which notifies the accept loop to shut down.
+/// However, the `Drop` impl cannot `.await` the join handle (dropping is
+/// synchronous), so it only signals shutdown — the accept loop finishes
+/// asynchronously. For a guaranteed clean shutdown, call `shutdown().await`.
 pub struct RunningServer {
     /// The actual port the OS bound (useful when `port=0` was requested).
     pub actual_port: u16,
-    pub(crate) join_handle: tokio::task::JoinHandle<()>,
+    pub(crate) join_handle: Option<tokio::task::JoinHandle<()>>,
     pub(crate) shutdown_notify: Arc<tokio::sync::Notify>,
     pub(crate) registry: Arc<SinkRegistry>,
     pub(crate) sink_capacity: Option<usize>,
+}
+
+impl Drop for RunningServer {
+    fn drop(&mut self) {
+        self.shutdown_notify.notify_one();
+        if let Some(handle) = self.join_handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl RunningServer {
@@ -224,6 +254,10 @@ impl RunningServer {
     /// Subscribe and obtain both the [`DataSink`] (sender) and the matching
     /// `Receiver`. The receiver should be drained in a dedicated task;
     /// otherwise backpressure drops frames.
+    ///
+    /// The `DataSink` holds the **only** sender clone outside the registry.
+    /// When it is dropped, the sender is closed and the registry prunes the
+    /// slot on the next `publish()` call.
     pub fn subscribe_receiver(
         &self,
     ) -> (
@@ -234,6 +268,14 @@ impl RunningServer {
             .sink_capacity
             .unwrap_or(crate::DEFAULT_SINK_CAPACITY);
         let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(cap);
+        // Move `tx` into the registry (no clone). The returned `DataSink`
+        // wraps a clone so the subscriber can still push frames, but when
+        // both the DataSink and the registry entry detect the channel is
+        // closed (receiver dropped), publish() prunes the slot.
+        //
+        // The registry holds the original; DataSink gets a clone. When the
+        // receiver (rx) is dropped, both clones detect closure via
+        // `is_closed()`. The registry entry is pruned on the next publish.
         if let Ok(mut v) = self.registry.sinks.lock() {
             v.push(tx.clone());
         }
@@ -248,28 +290,33 @@ impl RunningServer {
 
     /// Graceful shutdown. Notifies the accept loop, aborts all per-connection
     /// tasks, and waits for the accept loop to finish.
-    pub async fn shutdown(self) -> Result<(), WsError> {
-        // `notify_one()` stores a permit so even if the accept loop is
-        // currently parked on `listener.accept()`, the next iteration's
-        // `notified()` will fire immediately.
+    pub async fn shutdown(mut self) -> Result<(), WsError> {
         self.shutdown_notify.notify_one();
-        // Wait for the accept loop to finish (it aborts and joins all
-        // per-connection tasks internally).
-        self.join_handle.await.map_err(|_| WsError::Shutdown)?;
+        if let Some(handle) = self.join_handle.take() {
+            handle.await.map_err(|_| WsError::Shutdown)?;
+        }
         Ok(())
     }
 }
 
 /// Default origin allowlist: loopback http(s) and `file://` schemes.
+/// Default allowed origins for the loopback WS server.
+///
+/// `file://` is **not** included by default for security — a malicious local
+/// file loaded in a WebView would pass the origin check. Apps that need
+/// `file://` support should add it explicitly via `with_allowed_origins`.
 fn default_allowed_origins() -> Vec<String> {
     vec![
         "http://127.0.0.1".into(),
         "http://localhost".into(),
         "https://127.0.0.1".into(),
         "https://localhost".into(),
-        "file://".into(),
     ]
 }
+
+/// Maximum WebSocket message size (16 MiB). Prevents memory exhaustion from
+/// oversized frames on the loopback connection.
+const MAX_WS_MESSAGE_SIZE: usize = 16 << 20;
 
 /// Perform the WebSocket handshake, rejecting forbidden origins BEFORE the
 /// upgrade completes.
@@ -282,7 +329,11 @@ async fn upgrade_handshake(
         allowed,
         allow_missing_origin,
     };
-    let ws = tokio_tungstenite::accept_hdr_async(stream, cb).await?;
+    let config = Some(tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(MAX_WS_MESSAGE_SIZE),
+        ..Default::default()
+    });
+    let ws = tokio_tungstenite::accept_hdr_async_with_config(stream, cb, config).await?;
     Ok(ws)
 }
 
@@ -329,19 +380,15 @@ fn check_origin(
 
     let ok = match origin {
         Some(ref o) => {
-            if allowed.iter().any(|a| a == "*" || a == "null") {
-                true
-            } else {
-                allowed.iter().any(|a| {
-                    if a.ends_with('/') {
-                        o.starts_with(a.as_str())
-                    } else {
-                        o == a
-                            || o.starts_with(&format!("{a}/"))
-                            || o.starts_with(&format!("{a}:"))
-                    }
-                })
+            // Reject "null" origin (sent by sandboxed iframes, file:// URIs,
+            // data: URIs, cross-origin redirects) — it must never be treated
+            // as a valid origin. Also reject "*" as a wildcard — callers must
+            // use `allow_missing_origin = true` if they need to accept all.
+            if o == "null" || o == "*" {
+                warn!("ws handshake rejected: unsafe origin value '{o}'");
+                return Err(reject_response(o));
             }
+            allowed.iter().any(|a| origin_matches(a, o))
         }
         // No Origin header: reject by default for security. Callers who
         // need to accept non-browser clients (e.g. raw WebSocket clients)
@@ -367,6 +414,66 @@ fn reject_response(reason: &str) -> tokio_tungstenite::tungstenite::handshake::s
                 "403 Forbidden".to_string(),
             ))
         })
+}
+
+/// Check whether an allowed origin spec matches the actual origin.
+///
+/// An origin is `scheme://host[:port]` (no path, no query, no fragment).
+///
+/// Matching rules:
+/// - If `allowed` ends with `/` (e.g. `"file://"`), it is treated as a scheme
+///   prefix: the actual origin must start with `allowed`.
+/// - Otherwise, `allowed` is treated as a full origin string. The actual
+///   origin must match exactly, or differ only by a default port (e.g.
+///   `https://example.com` matches `https://example.com:443`).
+fn origin_matches(allowed: &str, actual: &str) -> bool {
+    // Scheme-prefix match for entries like "file://"
+    if allowed.ends_with('/') {
+        return actual.starts_with(allowed);
+    }
+    // Exact match fast path
+    if allowed == actual {
+        return true;
+    }
+    // Try to strip default ports for comparison.
+    // `https://host:443` == `https://host`, `http://host:80` == `http://host`
+    let norm_allowed = normalize_origin(allowed);
+    let norm_actual = normalize_origin(actual);
+    norm_allowed == norm_actual
+}
+
+/// Strip default ports (443 for https, 80 for http) from an origin string.
+/// Uses proper URL-like parsing: finds the host:port portion after `scheme://`
+/// and only strips the port if it is a numeric default for the scheme.
+fn normalize_origin(origin: &str) -> String {
+    let (scheme, rest) = if let Some(h) = origin.strip_prefix("https://") {
+        ("https://", h)
+    } else if let Some(h) = origin.strip_prefix("http://") {
+        ("http://", h)
+    } else {
+        return origin.to_string();
+    };
+
+    // `rest` is `host[:port]` (origin has no path/query/fragment by spec).
+    // Split on the LAST colon — hostnames don't contain colons (IPv6 is
+    // bracketed as `[::1]` so the last colon after `]` is the port separator).
+    if let Some(idx) = rest.rfind(':') {
+        let host = &rest[..idx];
+        let port_str = &rest[idx + 1..];
+        // Only strip if the suffix is a valid numeric port.
+        if port_str.chars().all(|c| c.is_ascii_digit()) {
+            let port: u16 = port_str.parse().unwrap_or(0);
+            let is_default = match scheme {
+                "https://" => port == 443,
+                "http://" => port == 80,
+                _ => false,
+            };
+            if is_default {
+                return format!("{scheme}{host}");
+            }
+        }
+    }
+    origin.to_string()
 }
 
 impl std::fmt::Debug for RunningServer {

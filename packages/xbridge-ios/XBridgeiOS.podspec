@@ -14,20 +14,33 @@ XBridgeiOS is the native iOS component of the XBridge SDK. It provides:
    WebSocket server on 127.0.0.1 for high-performance binary streaming.
 4. A security policy struct for origin allowlists (defense-in-depth).
                        DESC
-  s.homepage         = 'https://github.com/nickcao/xbridge'
+  s.homepage         = 'https://github.com/3kaiu/xbridge'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
   s.author           = { 'XBridge Contributors' => 'dev@xbridge.io' }
 
-  s.ios.deployment_target = '12.0'
+  s.source           = { :git => 'https://github.com/3kaiu/xbridge.git', :tag => s.version.to_s }
+  s.ios.deployment_target = '13.0'
   s.swift_version         = '5.9'
 
-  s.source_files = 'Sources/XBridgeiOS/**/*.swift',
-                   'Sources/XBridgeiOS/**/*.h',
-                   'Sources/XBridgeiOS/**/*.modulemap'
+  s.source_files = 'Sources/XBridgeiOS/**/*.swift'
 
-  s.weak_frameworks = 'WebKit'
+  # WebKit is a stable framework since iOS 8 — use strong link, not weak.
+  s.frameworks = 'WebKit'
+
+  # Flutter framework — the plugin imports the `Flutter` module and
+  # implements `FlutterPlugin`. Consumers' Flutter tooling provides this.
+  s.dependency 'Flutter'
 
   # The Rust core (xbridge_core.xcframework) is NOT bundled with this pod.
   # Consumers must build it from the `rust/xbridge_core` crate and add the
   # resulting .xcframework to their Xcode project. See README.md for details.
+
+  # Preserve the C header and modulemap for consumers that link
+  # xbridge_core.xcframework — they need these files available but NOT
+  # compiled as Swift sources.
+  s.preserve_paths = 'Sources/XBridgeiOS/WebSocket/*.h',
+                     'Sources/XBridgeiOS/WebSocket/*.modulemap'
+  s.xcconfig = {
+    'SWIFT_INCLUDE_PATHS' => '$(PODS_ROOT)/XBridgeiOS/Sources/XBridgeiOS/WebSocket'
+  }
 end

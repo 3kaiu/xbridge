@@ -106,11 +106,15 @@ impl ConnectionHandlerBuilder {
 /// (see [`crate::control`]) but the raw string is still forwarded verbatim so
 /// downstream subscribers may decode once and reuse.
 ///
-/// The function returns when the peer closes the socket or any error occurs.
-/// It never panics: handler exceptions are not possible in safe Rust (the
-/// callbacks are plain `Fn` closures; if they panic, the connection task
-/// aborts but the server keeps running because each connection is isolated in
-/// its own `tokio::spawn` task).
+/// An idle timeout of 5 minutes is enforced: if no frame is received within
+/// that window, the connection is closed. This prevents idle connections from
+/// permanently occupying connection slots.
+///
+/// The function returns when the peer closes the socket, an error occurs, or
+/// the idle timeout fires. It never panics: handler exceptions are not possible
+/// in safe Rust (the callbacks are plain `Fn` closures; if they panic, the
+/// connection task aborts but the server keeps running because each connection
+/// is isolated in its own `tokio::spawn` task).
 pub async fn handle_connection<S>(stream: WebSocketStream<S>, handler: Arc<ConnectionHandler>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -119,33 +123,61 @@ where
 
     (handler.on_connect)();
 
-    while let Some(msg) = ws_stream.next().await {
-        match msg {
-            Ok(Message::Binary(bytes)) => {
-                // ownership transfer, zero copy
-                (handler.on_binary)(bytes);
-            }
-            Ok(Message::Text(text)) => {
-                (handler.on_text)(text);
-            }
-            Ok(Message::Ping(payload)) => {
-                // Respond with pong — tungstenite auto-responds in
-                // most configs, but be explicit so keepalives work
-                // even when auto-respond is disabled.
-                let _ = ws_stream.send(Message::Pong(payload)).await;
-            }
-            Ok(Message::Pong(_)) => {
-                // ignore; keepalive acknowledgement
-            }
-            Ok(Message::Close(_)) => {
-                debug!("ws connection closed by peer");
+    /// Maximum idle duration before a connection is forcibly closed.
+    const IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(300);
+
+    loop {
+        let next = tokio::time::timeout(IDLE_TIMEOUT, ws_stream.next()).await;
+        match next {
+            Err(_) => {
+                warn!("ws connection idle timeout ({:?}), closing", IDLE_TIMEOUT);
                 break;
             }
-            Ok(Message::Frame(_)) => {
-                // Raw frame — tungstenite handles internally; ignore.
-            }
-            Err(e) => {
-                warn!("ws connection error: {e}");
+            Ok(Some(msg)) => match msg {
+                Ok(Message::Binary(bytes)) => {
+                    (handler.on_binary)(bytes);
+                }
+                Ok(Message::Text(text)) => {
+                    // Parse once; forward the raw string to the callback for
+                    // logging, and send a control response if valid.
+                    let parsed = crate::control::ControlMessage::parse(&text);
+                    (handler.on_text)(text);
+                    if let Some(ctrl) = parsed {
+                        debug!(
+                            "ws control frame: action={}, params={}",
+                            ctrl.action, ctrl.params
+                        );
+                        let resp = crate::control::ControlResponse::ok();
+                        if let Err(e) = ws_stream
+                            .send(Message::Text(resp.to_json_string()))
+                            .await
+                        {
+                            warn!("failed to send control response: {e}");
+                        }
+                    } else {
+                        warn!("ws text frame is not a valid control message");
+                    }
+                }
+                Ok(Message::Ping(payload)) => {
+                    let _ = ws_stream.send(Message::Pong(payload)).await;
+                }
+                Ok(Message::Pong(_)) => {
+                    // keepalive acknowledgement
+                }
+                Ok(Message::Close(_)) => {
+                    debug!("ws connection closed by peer");
+                    break;
+                }
+                Ok(Message::Frame(_)) => {
+                    // Raw frame — tungstenite handles internally; ignore.
+                }
+                Err(e) => {
+                    warn!("ws connection error: {e}");
+                    break;
+                }
+            },
+            Ok(None) => {
+                // Stream ended (peer closed)
                 break;
             }
         }
