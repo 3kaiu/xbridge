@@ -2,7 +2,7 @@
 
 A generic, business-free cross-platform bridge SDK for Flutter ↔ H5 WebView integration.
 
-Part of the [XBridge](https://github.com/nicklama/xbridge) monorepo. Pair with [`xbridge-js`](../xbridge-js) on the H5 side and [`xbridge_platform_interface`](../xbridge_platform_interface) for native platform contracts.
+Part of the [XBridge](https://github.com/3kaiu/xbridge) monorepo. Pair with [`xbridge-js`](https://github.com/3kaiu/xbridge/tree/main/packages/xbridge-js) on the H5 side and [`xbridge_platform_interface`](https://github.com/3kaiu/xbridge/tree/main/packages/xbridge_platform_interface) for native platform contracts.
 
 ## Features
 
@@ -92,10 +92,8 @@ The data plane (binary frames) flows H5 ↔ native WS directly — no Base64, no
 | Symbol | Purpose |
 | :--- | :--- |
 | `BridgeController` | Central router; `addHandler`, `setFallbackHandler`, `setSecurityPolicy`, `handleRawMessage`, `dispatchEvent`. |
-| `BridgeTransport` | Pluggable JS injection contract (implement for custom WebView engines). |
 | `BridgeRequest` / `BridgeResponse` / `BridgeEvent` / `BridgeError` | Protocol models. |
 | `BridgeMethodContext` / `BridgeMethodHandler` | Handler contract. |
-| `BridgeJavaScriptTransport` | Default transport for `webview_flutter`. |
 | `WebViewFlutterBridgeAdapter` / `InAppWebViewBridgeAdapter` | Engine adapters. |
 | `FallbackChannel` | Singleton native fallback `MethodChannel`. |
 | `LocalWebSocketBridge` | Control-plane client for the local WS bypass. |

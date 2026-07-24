@@ -1,70 +1,114 @@
 # XBridge
 
-通用、开源、零业务耦合的跨端桥接 SDK。统一 H5 / Flutter / Native (iOS + Android + HarmonyOS) 三端通信协议。
+通用、开源、零业务耦合的跨端桥接 SDK。三层独立可用，不强制依赖其他层。
 
 ## 架构
 
-- **`packages/xbridge-js`** — H5 端 TypeScript SDK，NPM 分发。基于 JSON-RPC 2.0 变体协议，自动嗅探容器环境（Flutter AppBridge / WKWebView / flutter_inappwebview / dsbridge）。
-- **`packages/xbridge_flutter`** — Flutter 端 Dart SDK，Pub 分发。`BridgeController` 统一接收 H5 请求，支持 `webview_flutter` 与 `flutter_inappwebview` 双引擎，未注册方法透传至 Native。
-- **`packages/xbridge_platform_interface`** — Flutter 平台接口层，定义 Native 侧 Local WS Server 控制流与安全策略。
-- **`rust/xbridge_core`** — Rust Local WebSocket Server，高性能多媒体流旁路通道。H5 直连 `ws://127.0.0.1:port`，ArrayBuffer 二进制全双工，零序列化开销。提供 C-ABI 供 Native 桥接。
-- **`packages/xbridge-android`** — Android 原生 SDK，Maven/Gradle 分发。接收 Flutter 透传、`@JavascriptInterface` 同步旁路注入、JNI 桥接 Rust WS Server。
-- **`packages/xbridge-ios`** — iOS 原生 SDK，CocoaPods 分发。`FlutterPlugin` 透传接收、`WKScriptMessageHandler` 同步旁路、Swift 桥接 Rust C-ABI。
+```
+┌─────────────────────────────────────┐
+│  H5 层 (xbridge-js)                  │  npm: pnpm add xbridge-js
+├─────────────────────────────────────┤
+│  Flutter 层 (xbridge_flutter)        │  git 依赖，含 Android/iOS 原生代码
+├─────────────────────────────────────┤
+│  Native 层                           │
+│  ├ Android (xbridge-android)         │  JitPack AAR
+│  ├ iOS (xbridge-ios)                 │  CocoaPods
+│  └ Rust core (xbridge_core)          │  crates.io / C-ABI
+└─────────────────────────────────────┘
+```
 
-## 性能设计
+每一层可独立使用：H5+Flutter、H5+Native、或三层全用。
 
-- 协议层序列化 + 路由分发开销 < 1ms（单次 `JSON.parse` / `Map` O(1) 查表 / 单次注入回传）。
-- 长音频流绕过 JS Bridge：H5 直连本地 WS Server，二进制全双工，无 Base64 拷贝。
-- Rust 侧 `Vec<u8>` 所有权传递，无拷贝；背压满时丢弃 + 告警。
+## 安装
 
-## 三态架构
+### H5（npm）
 
-| 通道 | 用途 | 特性 |
-| --- | --- | --- |
-| Async Bridge | 常规 JSON-RPC 请求-响应 | 跨 Flutter Channel，绝对异步 |
-| Sync Bypass | 纯同步调用（`callSync`） | 走 Native `@JavascriptInterface` / `dsbridge` 直连，绕过 Flutter 线程 |
-| Local WS Server | 大体积多媒体流 | H5 ↔ 本地 WS，ArrayBuffer 全双工，零序列化 |
-
-## 快速开始
-
-### H5
+```bash
+pnpm add xbridge-js
+```
 
 ```typescript
 import { XBridge } from 'xbridge-js';
 const bridge = new XBridge();
 const token = await bridge.call('getToken');
-const info = bridge.callSync('getAppInfo'); // 同步降级
 ```
 
-### Flutter
+### Flutter（git 依赖）
+
+```yaml
+# pubspec.yaml
+dependencies:
+  xbridge_flutter:
+    git:
+      url: https://github.com/3kaiu/xbridge.git
+      path: packages/xbridge_flutter
+      ref: v0.1.0
+```
 
 ```dart
+import 'package:xbridge_flutter/xbridge_flutter.dart';
+
 final bridge = BridgeController()..attachWebViewController(controller);
 bridge.addHandler('getToken', (ctx, params) => sessionService.token);
-WebViewFlutterBridgeAdapter().attach(controller, bridge);
-// 未注册方法自动经 FallbackChannel -> MethodChannel('xbridge/native_fallback') 透传到 Native
 ```
 
-### Android Native
+Android/iOS 原生代码随 Flutter plugin 自动包含，零配置。
+
+### Android（JitPack）
+
+```groovy
+// build.gradle
+implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.0'
+```
 
 ```kotlin
-// 在 MainActivity.configureFlutterEngine 中：
-XBridgePluginRegistry.register(
-    flutterEngine,
-    nativeBridge = XBridgeNativeBridge { method, params -> existingDsBridge.handle(method, params) },
-    webView = webView,  // 注入 @JavascriptInterface 同步通道
+val syncInterface = XBridgeSyncInterface(
+    nativeBridgeProvider = { myBridge },
+    securityPolicyProvider = { XBridgeSecurityPolicy.allowlist(setOf("https://app.example.com")) },
+    originProvider = { webView.url },
 )
+syncInterface.attach(webView)
 ```
 
-### iOS Native
+### iOS（CocoaPods）
+
+```ruby
+# Podfile
+pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => 'v0.1.0'
+```
 
 ```swift
-// 在 AppDelegate 中：
-XBridgePlugin.register(with: registrar)
-plugin.nativeBridge = AppNativeBridge { method, params in
-    existingDsBridge.handle(method, params)  // app 自行实现，XBridge 不含业务
-}
+let syncHandler = XBridgeSyncHandler()
+syncHandler.nativeBridge = MyNativeBridge()
+syncHandler.securityPolicy = .allowlist(["https://app.example.com"])
+syncHandler.attach(to: webView)
 ```
+
+### Rust（crates.io）
+
+```bash
+cargo add xbridge_core
+```
+
+## 三态通道
+
+| 通道 | 用途 | 特性 |
+| --- | --- | --- |
+| Async Bridge | 常规 JSON-RPC 请求-响应 | 跨 Flutter Channel，绝对异步 |
+| Sync Bypass | 纯同步调用（`callSync`） | 走 Native `@JavascriptInterface` / WKScriptMessageHandler 直连 |
+| Local WS Server | 大体积多媒体流 | H5 ↔ 本地 WS，ArrayBuffer 全双工，零序列化 |
+
+## 包结构
+
+| 包 | 路径 | 分发方式 | 依赖 Flutter？ |
+| --- | --- | --- | --- |
+| xbridge-js | `packages/xbridge-js` | npm | ❌ |
+| xbridge_flutter | `packages/xbridge_flutter` | git 依赖 | ✅ |
+| xbridge_protocol | `packages/xbridge_protocol` | git 依赖 (纯 Dart) | ❌ |
+| xbridge_platform_interface | `packages/xbridge_platform_interface` | git 依赖 | ✅ |
+| xbridge-android | `packages/xbridge-android` | JitPack | ❌ (Core) / ✅ (Flutter) |
+| xbridge-ios | `packages/xbridge-ios` | CocoaPods | ❌ (Core) / ✅ (Flutter) |
+| xbridge_core | `rust/xbridge_core` | crates.io | ❌ |
 
 ## 开发
 
@@ -78,9 +122,25 @@ cd packages/xbridge_flutter && flutter pub get && dart analyze
 # Rust
 cd rust/xbridge_core && cargo test
 
-# Android (需在宿主 app 的 Gradle 构建中编译)
+# Android
+cd packages/xbridge-android && ./gradlew :xbridge-core:build
+
 # iOS (需 pod install + xcodebuild)
 ```
+
+## 发布
+
+推送 `v*` tag 触发 GitHub Actions 自动发布：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+- npm 自动 publish（需配置 `NPM_TOKEN` secret）
+- crates.io 自动 publish（需配置 `CRATES_IO_TOKEN` secret）
+- JitPack 自动监听 tag 构建 AAR
+- GitHub Release 自动创建，带安装说明
 
 ## 许可
 
