@@ -38,7 +38,7 @@ jobs:
 
             ### H5 (npm)
             ```bash
-            pnpm add xbridge-js
+            pnpm add @3kaiu/xbridge-js
             ```
 
             ### Flutter (git dependency)
