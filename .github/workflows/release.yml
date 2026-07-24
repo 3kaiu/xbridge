@@ -23,13 +23,24 @@ jobs:
           cd packages/xbridge-js
           npm ci
           npm run build
-          npm publish --access public
+
+          # Extract version from package.json
+          VERSION=$(node -p "require('./package.json').version")
+          PKG_NAME=$(node -p "require('./package.json').name")
+
+          # Check if this version already exists on npm
+          if npm view "$PKG_NAME@$VERSION" version 2>/dev/null; then
+            echo "Version $VERSION already published, skipping npm publish"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # ── GitHub Release with auto-generated notes ────────────────────────────
   github-release:
     needs: [js-publish]
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
