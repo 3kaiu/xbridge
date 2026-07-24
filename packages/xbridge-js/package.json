@@ -1,5 +1,5 @@
 {
-  "name": "xbridge-js",
+  "name": "@3kaiu/xbridge-js",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",

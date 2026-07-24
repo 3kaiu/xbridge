@@ -8,15 +8,15 @@ injects `window.XBridge.postMessage`, plus a sync bypass adapter for
 ## Install
 
 ```sh
-npm install xbridge-js
+npm install @3kaiu/xbridge-js
 # or
-pnpm add xbridge-js
+pnpm add @3kaiu/xbridge-js
 ```
 
 ## Quick start
 
 ```ts
-import { XBridge } from "xbridge-js";
+import { XBridge } from "@3kaiu/xbridge-js";
 
 const bridge = new XBridge();
 
@@ -44,7 +44,7 @@ const unreg = bridge.registerHandler("getUserConfirmation", (params) => {
 unreg();
 
 // Re-sniff if the container injects window.XBridge after SDK init
-import { resetSniffCache } from "xbridge-js";
+import { resetSniffCache } from "@3kaiu/xbridge-js";
 resetSniffCache();
 const bridge2 = new XBridge(); // picks up StandardAdapter now
 ```
@@ -61,7 +61,7 @@ adapter:
 Override explicitly when you need to force a transport, e.g. for tests:
 
 ```ts
-import { XBridge, StandardAdapter } from "xbridge-js";
+import { XBridge, StandardAdapter } from "@3kaiu/xbridge-js";
 
 const bridge = new XBridge({ adapter: new StandardAdapter() });
 ```

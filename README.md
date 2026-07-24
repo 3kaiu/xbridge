@@ -6,7 +6,7 @@
 
 ```
 ┌─────────────────────────────────────┐
-│  H5 层 (xbridge-js)                  │  npm: pnpm add xbridge-js
+│  H5 层 (xbridge-js)                  │  npm: pnpm add @3kaiu/xbridge-js
 ├─────────────────────────────────────┤
 │  Flutter 层 (xbridge_flutter)        │  git 依赖，含 Android/iOS 原生代码
 ├─────────────────────────────────────┤
@@ -24,11 +24,11 @@
 ### H5（npm）
 
 ```bash
-pnpm add xbridge-js
+pnpm add @3kaiu/xbridge-js
 ```
 
 ```typescript
-import { XBridge } from 'xbridge-js';
+import { XBridge } from '@3kaiu/xbridge-js';
 const bridge = new XBridge();
 const token = await bridge.call('getToken');
 ```
