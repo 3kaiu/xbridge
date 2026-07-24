@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   # ── H5 SDK: publish to npm ──────────────────────────────────────────────
   js-publish:
