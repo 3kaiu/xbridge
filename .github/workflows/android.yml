@@ -41,11 +41,16 @@ jobs:
           curl -sL https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip -o /tmp/kotlin.zip
           unzip -q /tmp/kotlin.zip -d /tmp
           export PATH="/tmp/kotlinc/bin:$PATH"
-          KOTLIN_FILES=$(find src/main/java -name '*.kt')
+          # Source files are now in xbridge-core/ and xbridge-flutter/ submodules.
+          KOTLIN_FILES=$(find xbridge-core/src/main/java xbridge-flutter/src/main/java -name '*.kt' 2>/dev/null)
+          if [ -z "$KOTLIN_FILES" ]; then
+            echo "::error::No Kotlin source files found"
+            exit 1
+          fi
           # Compile with -d /dev/null. Unresolved reference errors are expected
           # (no Android SDK); we grep for "e: " syntax/parse errors only.
           kotlinc $KOTLIN_FILES -d /dev/null -cp "$JAVA_HOME/lib/*" 2>&1 | tee /tmp/kotlinc-out.txt || true
-          # Check for syntax errors (lines starting with "e: file" that aren't
+          # Check for syntax errors (lines starting with "e: " that aren't
           # "unresolved reference" — those are just missing Android classes).
           SYNTAX_ERRORS=$(grep "^e: " /tmp/kotlinc-out.txt | grep -v "unresolved reference" | head -5 || true)
           if [ -n "$SYNTAX_ERRORS" ]; then
