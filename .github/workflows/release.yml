@@ -24,23 +24,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  # ── Rust core: publish to crates.io ────────────────────────────────────
-  rust-publish:
-    runs-on: ubuntu-latest
-    env:
-      HAS_TOKEN: ${{ secrets.CRATES_IO_TOKEN != '' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Publish
-        if: env.HAS_TOKEN == 'true'
-        run: cd rust/xbridge_core && cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-      - name: Skip (no token)
-        if: env.HAS_TOKEN != 'true'
-        run: echo "CRATES_IO_TOKEN not set, skipping crates.io publish"
-
   # ── GitHub Release with auto-generated notes ────────────────────────────
   github-release:
     needs: [js-publish]
@@ -82,10 +65,7 @@ jobs:
             pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => '${{ github.ref_name }}'
             ```
 
-            ### Rust (crates.io)
-            ```bash
-            cargo add xbridge_core
-            ```
-
-            > Note: tag format is `v0.1.0` for the git ref, but JitPack and
-            > crates.io strip the `v` prefix to get version `0.1.0`.
+            > Rust core (`xbridge_core`) is a build-time dependency compiled
+            > from source by the native layers. It is not published to any
+            > registry — consumers build it from `rust/xbridge_core/` or CI
+            > provides prebuilt binaries.
