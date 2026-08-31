@@ -103,6 +103,15 @@ export class XBridgeCore {
       try {
         this.adapter.send(JSON.stringify(request));
       } catch (err) {
+        if (typeof console !== "undefined") {
+          console.warn(
+            `[XBridge] call('${method}') failed to send:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+        if (options?.fallback !== undefined) {
+          return Promise.resolve(options.fallback);
+        }
         return Promise.reject(err);
       }
       return Promise.resolve(undefined);
@@ -120,6 +129,16 @@ export class XBridgeCore {
         // Send failed — clean up the pending entry before rejecting so the
         // timer doesn't fire on a dead request.
         this.dispatcher.cancel(id as string);
+        if (typeof console !== "undefined") {
+          console.warn(
+            `[XBridge] call('${method}') failed to send:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+        if (options?.fallback !== undefined) {
+          resolve(options.fallback);
+          return;
+        }
         reject(err);
       }
     });

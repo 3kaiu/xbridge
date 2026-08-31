@@ -72,4 +72,42 @@ export interface XBridgeCallOptions {
    * semantics where `requestId` is `null`.
    */
   noCallback?: boolean;
+  /**
+   * Graceful fallback value resolved when the bridge transport fails to send
+   * (e.g. running in standard Safari outside native container).
+   * When specified, transport errors will resolve to this fallback value
+   * instead of rejecting the Promise.
+   */
+  fallback?: unknown;
+}
+
+/**
+ * Error thrown when the adapter's `send()` fails at the transport layer.
+ *
+ * Callers can use `instanceof XBridgeSendError` to distinguish transport
+ * failures (e.g. `postMessage` unavailable or throwing `InvalidAccessError`)
+ * from business-level errors returned by the host.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await bridge.call('getSafeArea');
+ * } catch (err) {
+ *   if (err instanceof XBridgeSendError) {
+ *     // Bridge transport not available — use fallback
+ *     return defaultSafeArea;
+ *   }
+ *   throw err;
+ * }
+ * ```
+ */
+export class XBridgeSendError extends Error {
+  /** The original error from the transport (e.g. DOMException). */
+  readonly cause: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "XBridgeSendError";
+    this.cause = cause;
+  }
 }

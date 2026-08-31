@@ -16,7 +16,7 @@
  */
 
 import type { IXBridgeAdapter } from "../core/adapter.js";
-import { XBRIDGE_PROTOCOL_VERSION } from "../types.js";
+import { XBRIDGE_PROTOCOL_VERSION, XBridgeSendError } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Typed global interfaces (W1: replace `as any` with proper typing)
@@ -120,6 +120,9 @@ export class StandardAdapter implements IXBridgeAdapter {
   /** Bound event listener reference so we can remove it in `destroy()`. */
   private boundEventListener: ((ev: Event) => void) | null = null;
 
+  /** Circuit-breaker: set to true if postMessage exists but throws at runtime. */
+  private isBroken = false;
+
   /**
    * Invalidate the XBridge environment sniff cache so that a late-injected
    * `window.XBridge` (e.g. after the page already constructed `XBridge`) is
@@ -132,14 +135,23 @@ export class StandardAdapter implements IXBridgeAdapter {
   }
 
   isAvailable(): boolean {
+    if (this.isBroken) {
+      return false;
+    }
     const w = getWindow();
     return w !== undefined && typeof w.XBridge?.postMessage === "function";
   }
 
   send(message: string): void {
+    if (this.isBroken) {
+      throw new XBridgeSendError(
+        "[XBridge] StandardAdapter: postMessage is disabled due to a previous runtime error. " +
+        "Page is running outside a supported native container.",
+      );
+    }
     const w = getWindow();
     if (w === undefined) {
-      throw new Error("[XBridge] StandardAdapter: globalThis is not available");
+      throw new XBridgeSendError("[XBridge] StandardAdapter: globalThis is not available");
     }
     // Lazy re-install: if the host bootstrap reset our overrides to stubs
     // (or never let us install them), re-install now.
@@ -147,9 +159,21 @@ export class StandardAdapter implements IXBridgeAdapter {
       this.ensureOverridesInstalled(w);
     }
     if (typeof w.XBridge?.postMessage === "function") {
-      w.XBridge.postMessage(message);
+      try {
+        w.XBridge.postMessage(message);
+      } catch (err) {
+        // Circuit breaker tripped: mark broken so subsequent calls fail fast
+        // and isAvailable() / isConnected() correctly reflect the broken state.
+        this.isBroken = true;
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new XBridgeSendError(
+          `[XBridge] StandardAdapter: postMessage is present but threw on invocation (${detail}). ` +
+          "This typically means the page is running outside a supported native container.",
+          err,
+        );
+      }
     } else {
-      throw new Error(
+      throw new XBridgeSendError(
         "[XBridge] StandardAdapter: window.XBridge.postMessage is not available",
       );
     }
@@ -318,5 +342,6 @@ export class StandardAdapter implements IXBridgeAdapter {
     this._rejectOverride = null;
     this._inboundOverride = null;
     this.handler = null;
+    this.isBroken = false;
   }
 }

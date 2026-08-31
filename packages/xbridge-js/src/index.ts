@@ -21,6 +21,7 @@ import type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
 import { XBridgeCore } from "./core/bridge.js";
 import type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
 import type { XBridgeCallOptions } from "./types.js";
+import { XBridgeSendError } from "./types.js";
 import { StandardAdapter } from "./adapters/standard.js";
 import { setSniffCacheInvalidator } from "./adapters/standard.js";
 import { NativeSyncAdapter } from "./adapters/native_sync.js";
@@ -38,6 +39,7 @@ export {
 } from "./adapters/index.js";
 export {
   XBRIDGE_PROTOCOL_VERSION,
+  XBridgeSendError,
 } from "./types.js";
 export type {
   XBridgeRequest,
@@ -69,7 +71,7 @@ class NoopAdapter implements IXBridgeAdapter {
   }
 
   send(_message: string): void {
-    throw new Error(
+    throw new XBridgeSendError(
       "[XBridge] no bridge environment detected; call() cannot deliver messages. " +
         "Ensure the host (Flutter/native) has injected the bridge global before calling.",
     );
@@ -225,5 +227,23 @@ export class XBridge {
   /** Release all pending requests and listeners. */
   dispose(): void {
     this.core.dispose();
+  }
+
+  /**
+   * Whether the underlying async adapter is available in the current
+   * environment. Returns `false` when no bridge transport is detected
+   * (NoopAdapter) or when the StandardAdapter's `postMessage` is absent.
+   *
+   * H5 apps can use this to conditionally skip bridge calls:
+   * ```ts
+   * if (bridge.isConnected()) {
+   *   const safeArea = await bridge.call('getSafeArea');
+   * } else {
+   *   // fallback for non-app environments
+   * }
+   * ```
+   */
+  isConnected(): boolean {
+    return this._adapter.isAvailable();
   }
 }

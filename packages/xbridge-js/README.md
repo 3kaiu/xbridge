@@ -43,6 +43,26 @@ const unreg = bridge.registerHandler("getUserConfirmation", (params) => {
 // later
 unreg();
 
+// Environment availability check
+if (bridge.isConnected()) {
+  console.log("Bridge transport is connected");
+}
+
+// Direct fallback option: returns fallback value on transport error (no rejection)
+const safeArea = await bridge.call("getSafeArea", null, {
+  fallback: { top: 0, bottom: 0 },
+});
+
+// Or catch with XBridgeSendError
+import { XBridgeSendError } from "@3kaiu/xbridge-js";
+try {
+  const data = await bridge.call("getSafeArea");
+} catch (err) {
+  if (err instanceof XBridgeSendError) {
+    // Graceful fallback when outside native container
+  }
+}
+
 // Re-sniff if the container injects window.XBridge after SDK init
 import { resetSniffCache } from "@3kaiu/xbridge-js";
 resetSniffCache();
