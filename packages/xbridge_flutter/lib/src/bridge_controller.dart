@@ -30,6 +30,23 @@ class BridgeController {
   BridgeMethodHandler? _fallbackHandler;
   XBridgeSecurityPolicy? _policy;
   BridgeTransport? _transport;
+  BridgeRateLimiter? _rateLimiter;
+
+  /// Security telemetry dispatcher for observing access violations and rate limits.
+  final BridgeSecurityTelemetry telemetry = BridgeSecurityTelemetry();
+
+  /// Stream of security telemetry events.
+  Stream<BridgeSecurityEvent> get securityEventStream => telemetry.eventStream;
+
+  /// Callback listener for security telemetry events.
+  set onSecurityEvent(void Function(BridgeSecurityEvent event)? listener) {
+    telemetry.onEvent = listener;
+  }
+
+  /// Installs an optional [BridgeRateLimiter] to throttle invocations.
+  void setRateLimiter(BridgeRateLimiter? limiter) {
+    _rateLimiter = limiter;
+  }
 
   /// Pending Native→H5 calls awaiting a response. Keyed by request id.
   final Map<String, Completer<dynamic>> _pendingH5Calls =
@@ -171,10 +188,20 @@ class BridgeController {
     try {
       decoded = jsonDecode(jsonString);
     } catch (error, stackTrace) {
+      telemetry.record(
+        type: BridgeSecurityEventType.malformedMessage,
+        origin: _currentOrigin,
+        message: 'Failed to parse JSON bridge message: $error',
+      );
       debugPrint('[XBridge] Failed to parse bridge message: $error\n$stackTrace');
       return;
     }
     if (decoded is! Map<String, dynamic>) {
+      telemetry.record(
+        type: BridgeSecurityEventType.malformedMessage,
+        origin: _currentOrigin,
+        message: 'Dropping non-object bridge message',
+      );
       debugPrint('[XBridge] Dropping non-object bridge message');
       return;
     }
@@ -196,6 +223,11 @@ class BridgeController {
     try {
       request = BridgeRequest.fromMap(decoded);
     } catch (error, stackTrace) {
+      telemetry.record(
+        type: BridgeSecurityEventType.malformedMessage,
+        origin: _currentOrigin,
+        message: 'Failed to parse bridge request: $error',
+      );
       debugPrint('[XBridge] Failed to parse bridge request: $error\n$stackTrace');
       return;
     }
@@ -204,6 +236,12 @@ class BridgeController {
 
     try {
       if (!_isAllowed(request)) {
+        telemetry.record(
+          type: BridgeSecurityEventType.methodForbidden,
+          origin: _currentOrigin,
+          method: request.method,
+          message: 'Origin "${_currentOrigin ?? "nil"}" is not permitted to call method "${request.method}"',
+        );
         if (!isFireAndForget) {
           try {
             await transport.reject(
@@ -215,6 +253,30 @@ class BridgeController {
             );
           } catch (e) {
             debugPrint('[XBridge] Failed to send forbidden reject: $e');
+          }
+        }
+        return;
+      }
+
+      // Check rate limit
+      if (_rateLimiter != null && !_rateLimiter!.check(_currentOrigin, request.method)) {
+        telemetry.record(
+          type: BridgeSecurityEventType.rateLimitExceeded,
+          origin: _currentOrigin,
+          method: request.method,
+          message: 'Calling rate limit exceeded for method "${request.method}"',
+        );
+        if (!isFireAndForget) {
+          try {
+            await transport.reject(
+              request.id!,
+              BridgeError(
+                code: 'BRIDGE_RATE_LIMITED',
+                message: 'Bridge method "${request.method}" rate limit exceeded',
+              ),
+            );
+          } catch (e) {
+            debugPrint('[XBridge] Failed to send rate-limited reject: $e');
           }
         }
         return;
@@ -272,7 +334,7 @@ class BridgeController {
     if (origin == null) {
       return false;
     }
-    return policy.allows(origin);
+    return policy.isMethodAllowed(origin, request.method);
   }
 
   /// Explicitly sets the current page origin, used by the security policy.
@@ -303,5 +365,8 @@ class BridgeController {
     _policy = null;
     _transport = null;
     _explicitOrigin = null;
+    _rateLimiter?.reset();
+    _rateLimiter = null;
+    telemetry.dispose();
   }
 }

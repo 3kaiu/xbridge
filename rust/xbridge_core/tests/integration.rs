@@ -131,3 +131,97 @@ async fn connection_limit_is_enforced() {
     }
     server.shutdown().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn ticket_auth_succeeds_with_valid_query_ticket() {
+    let server = LocalWsServer::new()
+        .with_allow_missing_origin(true)
+        .with_ticket_auth(true)
+        .start(0)
+        .await
+        .expect("start");
+    let port = server.actual_port();
+
+    let ticket = server.issue_ticket(std::time::Duration::from_secs(10));
+    let url = format!("ws://127.0.0.1:{port}/?ticket={ticket}");
+    let (mut ws, _resp) = connect_async(url).await.expect("connect with valid ticket");
+    ws.send(Message::Close(None)).await.ok();
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn ticket_auth_rejects_missing_or_invalid_ticket() {
+    let server = LocalWsServer::new()
+        .with_allow_missing_origin(true)
+        .with_ticket_auth(true)
+        .start(0)
+        .await
+        .expect("start");
+    let port = server.actual_port();
+
+    // 1. Missing ticket
+    let url_missing = format!("ws://127.0.0.1:{port}/");
+    assert!(
+        connect_async(url_missing).await.is_err(),
+        "connecting without ticket must fail"
+    );
+
+    // 2. Invalid ticket
+    let url_invalid = format!("ws://127.0.0.1:{port}/?ticket=invalid_ticket_hex_123");
+    assert!(
+        connect_async(url_invalid).await.is_err(),
+        "connecting with invalid ticket must fail"
+    );
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn ticket_auth_single_use_prevents_replay() {
+    let server = LocalWsServer::new()
+        .with_allow_missing_origin(true)
+        .with_ticket_auth(true)
+        .start(0)
+        .await
+        .expect("start");
+    let port = server.actual_port();
+
+    let ticket = server.issue_ticket(std::time::Duration::from_secs(10));
+    let url = format!("ws://127.0.0.1:{port}/?ticket={ticket}");
+
+    // First use: must succeed
+    let (mut ws, _) = connect_async(url.clone()).await.expect("first connection must succeed");
+    ws.send(Message::Close(None)).await.ok();
+
+    // Second use of same ticket: must be rejected (CAS consumed)
+    assert!(
+        connect_async(url).await.is_err(),
+        "reusing single-use ticket must be rejected"
+    );
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn ticket_auth_rejects_expired_ticket() {
+    let server = LocalWsServer::new()
+        .with_allow_missing_origin(true)
+        .with_ticket_auth(true)
+        .start(0)
+        .await
+        .expect("start");
+    let port = server.actual_port();
+
+    // Issue ticket with very short TTL (10ms)
+    let ticket = server.issue_ticket(std::time::Duration::from_millis(10));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    let url = format!("ws://127.0.0.1:{port}/?ticket={ticket}");
+    assert!(
+        connect_async(url).await.is_err(),
+        "connecting with expired ticket must fail"
+    );
+
+    server.shutdown().await.expect("shutdown");
+}
+

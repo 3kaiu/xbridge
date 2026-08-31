@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "XBridge 核心通信时序与三态通道交互",
+    "locale": "zh-CN",
+    "output": "xbridge-channels-flow.html",
+    "viewBox": [960, 920],
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "views": [
+      {
+        "id": "async-rpc-flow",
+        "label": "异步 RPC 链路",
+        "focus": ["h5_page", "xbridge_core_js", "flutter_controller", "native_host"],
+        "note": "基于 JSON-RPC 2.0 的全链路异步调用、ID 匹配与超时响应管理。"
+      },
+      {
+        "id": "sync-bypass-flow",
+        "label": "原生同步 Bypass 链路",
+        "focus": ["h5_page", "xbridge_core_js", "native_host"],
+        "note": "原生接口直连同步获取 Token 与环境上下文，免除异步微任务调度开销。"
+      },
+      {
+        "id": "rust-ws-stream-flow",
+        "label": "本地 WS 二进制流链路",
+        "focus": ["h5_page", "rust_ws_server", "native_host"],
+        "note": "本地 127.0.0.1 Rust 高性能 WebSocket 零拷贝 ArrayBuffer 二进制全双工分发。"
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "h5_page",
+      "type": "external",
+      "label": "H5 业务页面",
+      "sublabel": "Web App / Vue / React"
+    },
+    {
+      "id": "xbridge_core_js",
+      "type": "frontend",
+      "label": "XBridge JS SDK",
+      "sublabel": "Core & Dispatcher"
+    },
+    {
+      "id": "flutter_controller",
+      "type": "backend",
+      "label": "Flutter 路由层",
+      "sublabel": "BridgeController"
+    },
+    {
+      "id": "native_host",
+      "type": "backend",
+      "label": "Native 原生层",
+      "sublabel": "Android / iOS"
+    },
+    {
+      "id": "rust_ws_server",
+      "type": "backend",
+      "brand": "rust",
+      "label": "Rust WS 服务",
+      "sublabel": "127.0.0.1 Server"
+    }
+  ],
+  "segments": [
+    {
+      "from": 145,
+      "to": 360,
+      "label": "通道一：异步 JSON-RPC 通信 (call / onEvent)"
+    },
+    {
+      "from": 375,
+      "to": 555,
+      "label": "通道二：原生同步直连 (callSync Bypass)"
+    },
+    {
+      "from": 570,
+      "to": 805,
+      "label": "通道三：本地 WS 二进制高速流 (Local WS Stream)"
+    }
+  ],
+  "messages": [
+    {
+      "from": "h5_page",
+      "to": "xbridge_core_js",
+      "y": 170,
+      "label": "bridge.call('getUserInfo', params)",
+      "variant": "emphasis"
+    },
+    {
+      "from": "xbridge_core_js",
+      "to": "flutter_controller",
+      "y": 205,
+      "label": "postMessage(JSON-RPC Request)",
+      "variant": "emphasis"
+    },
+    {
+      "from": "flutter_controller",
+      "to": "native_host",
+      "y": 240,
+      "label": "MethodChannel / Handler 执行",
+      "variant": "default"
+    },
+    {
+      "from": "native_host",
+      "to": "flutter_controller",
+      "y": 275,
+      "label": "返回原生业务数据",
+      "variant": "return"
+    },
+    {
+      "from": "flutter_controller",
+      "to": "xbridge_core_js",
+      "y": 310,
+      "label": "postMessage(JSON-RPC Response)",
+      "variant": "return"
+    },
+    {
+      "from": "xbridge_core_js",
+      "to": "h5_page",
+      "y": 345,
+      "label": "Promise.resolve(result)",
+      "variant": "return"
+    },
+    {
+      "from": "h5_page",
+      "to": "xbridge_core_js",
+      "y": 395,
+      "label": "bridge.callSync('getToken')",
+      "variant": "emphasis"
+    },
+    {
+      "from": "xbridge_core_js",
+      "to": "native_host",
+      "y": 435,
+      "label": "@JavascriptInterface / prompt() 直连",
+      "variant": "emphasis"
+    },
+    {
+      "from": "native_host",
+      "to": "xbridge_core_js",
+      "y": 475,
+      "label": "同步读取 Keychain / 缓存并返回",
+      "variant": "return"
+    },
+    {
+      "from": "xbridge_core_js",
+      "to": "h5_page",
+      "y": 515,
+      "label": "即时返回结果 (无微任务挂起)",
+      "variant": "return"
+    },
+    {
+      "from": "h5_page",
+      "to": "rust_ws_server",
+      "y": 595,
+      "label": "ws.connect('ws://127.0.0.1:port')",
+      "variant": "emphasis"
+    },
+    {
+      "from": "rust_ws_server",
+      "to": "h5_page",
+      "y": 635,
+      "label": "Origin 白名单鉴权与握手成功",
+      "variant": "security"
+    },
+    {
+      "from": "h5_page",
+      "to": "rust_ws_server",
+      "y": 675,
+      "label": "ws.send(ArrayBuffer 二进制流)",
+      "variant": "emphasis"
+    },
+    {
+      "from": "rust_ws_server",
+      "to": "native_host",
+      "y": 715,
+      "label": "C-ABI 零拷贝分发 (Vec<u8>)",
+      "variant": "emphasis"
+    },
+    {
+      "from": "native_host",
+      "to": "rust_ws_server",
+      "y": 755,
+      "label": "下游数据消费确认",
+      "variant": "default"
+    },
+    {
+      "from": "rust_ws_server",
+      "to": "h5_page",
+      "y": 785,
+      "label": "WS 全双工控制帧/状态回执",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "xbridge_core_js",
+      "from": 165,
+      "to": 350,
+      "type": "frontend"
+    },
+    {
+      "participant": "flutter_controller",
+      "from": 200,
+      "to": 315,
+      "type": "backend"
+    },
+    {
+      "participant": "native_host",
+      "from": 235,
+      "to": 280,
+      "type": "backend"
+    },
+    {
+      "participant": "xbridge_core_js",
+      "from": 390,
+      "to": 520,
+      "type": "frontend"
+    },
+    {
+      "participant": "native_host",
+      "from": 430,
+      "to": 480,
+      "type": "backend"
+    },
+    {
+      "participant": "rust_ws_server",
+      "from": 590,
+      "to": 790,
+      "type": "backend"
+    },
+    {
+      "participant": "native_host",
+      "from": 710,
+      "to": 760,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "异步通道：解耦与双向能力",
+      "items": [
+        "JSON-RPC 2.0 规范，包含单调递增 ID、超时机制 (默认 30s) 与上下文传递",
+        "支持 Native/Flutter 主动向 H5 发起请求 (callH5) 及全局事件广播 (dispatchEvent)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "同步通道：极致性能与即时性",
+      "items": [
+        "绕过 Flutter 事件循环与异步 IPC，走原生注入接口直接取值",
+        "解决 WebView 初始化时页面首屏强依赖 Token / SafeArea 的白屏等待痛点"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "本地 WS 流：高吞吐媒体与数字人",
+      "items": [
+        "Rust 驱动的本地 127.0.0.1 闭环服务，完全消除 Base64 / JSON 序列化性能开销",
+        "ArrayBuffer 内存所有权直传 (Vec<u8>)，承载音频流、数字人视频帧等大体量双工通信"
+      ]
+    }
+  ]
+}

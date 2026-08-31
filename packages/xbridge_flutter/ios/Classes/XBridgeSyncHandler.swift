@@ -246,18 +246,31 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
             params = p
         }
 
+        // Extract frame-level securityOrigin (iOS 14+, macOS 11+)
+        var frameOriginString: String? = nil
+        if #available(iOS 14.0, macOS 11.0, *) {
+            let sec = message.frameInfo.securityOrigin
+            if !sec.protocol.isEmpty && !sec.host.isEmpty {
+                if sec.port == 0 || (sec.protocol == "https" && sec.port == 443) || (sec.protocol == "http" && sec.port == 80) {
+                    frameOriginString = "\(sec.protocol)://\(sec.host)"
+                } else {
+                    frameOriginString = "\(sec.protocol)://\(sec.host):\(sec.port)"
+                }
+            }
+        }
+
         // Invoke the delegate. If off main, dispatch to main async.
         // JS side is Promise-based, result push-back is already async.
         let invokeBlock: () -> Void = { [weak self] in
             guard let self = self else { return }
 
             // Security policy check (defense-in-depth).
-            let origin = self.originProvider()
-            if !self.securityPolicy.allows(origin: origin) {
+            let origin = frameOriginString ?? self.originProvider()
+            if !self.securityPolicy.isMethodAllowed(origin: origin, method: method) {
                 self.pushError(
                     callbackId: callbackId,
-                    code: "ORIGIN_NOT_ALLOWED",
-                    message: "Origin '\(origin ?? "nil")' is not permitted by the security policy"
+                    code: "BRIDGE_METHOD_FORBIDDEN",
+                    message: "Origin '\(origin ?? "nil")' is not permitted to call method '\(method)' by the security policy"
                 )
                 return
             }

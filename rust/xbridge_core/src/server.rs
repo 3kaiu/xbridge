@@ -12,11 +12,14 @@
 //! 3. **Connection cap**: [`MAX_CONCURRENT_CONNECTIONS`] bounds concurrency;
 //!    excess connections are dropped immediately.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
+use rand::RngCore;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
@@ -26,6 +29,57 @@ use crate::error::WsError;
 use crate::handler::{handle_connection, ConnectionHandler};
 use crate::sink::{DataSink, SinkRegistry};
 use crate::MAX_CONCURRENT_CONNECTIONS;
+
+/// In-memory dynamic ticket storage for zero-trust session authentication.
+#[derive(Debug, Default)]
+pub struct TicketStore {
+    tickets: Mutex<HashMap<String, Instant>>,
+}
+
+impl TicketStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Issue an ephemeral ticket valid for `ttl`.
+    pub fn issue(&self, ttl: Duration) -> String {
+        let mut bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let ticket = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let expires_at = Instant::now() + ttl;
+        if let Ok(mut map) = self.tickets.lock() {
+            let now = Instant::now();
+            map.retain(|_, exp| *exp > now);
+            map.insert(ticket.clone(), expires_at);
+        }
+        ticket
+    }
+
+    /// Validate and atomically consume a ticket (single use).
+    /// Returns `true` if the ticket was valid and not expired.
+    pub fn consume(&self, ticket: &str) -> bool {
+        if let Ok(mut map) = self.tickets.lock() {
+            if let Some(expires_at) = map.remove(ticket) {
+                return Instant::now() <= expires_at;
+            }
+        }
+        false
+    }
+
+    /// Returns the count of active tickets currently in the store.
+    pub fn len(&self) -> usize {
+        if let Ok(map) = self.tickets.lock() {
+            map.len()
+        } else {
+            0
+        }
+    }
+
+    /// Returns whether the ticket store is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
 
 /// A configured-but-not-yet-running local WS server. Call [`start`](Self::start)
 /// to bind and obtain a [`RunningServer`].
@@ -39,6 +93,10 @@ pub struct LocalWsServer {
     /// Whether to accept connections with no `Origin` header (e.g. non-browser
     /// clients). Defaults to `false` for security.
     allow_missing_origin: bool,
+    /// Whether to require a valid one-time ticket during the handshake.
+    require_ticket: bool,
+    /// Custom ticket store if shared or pre-configured.
+    ticket_store: Option<Arc<TicketStore>>,
 }
 
 impl LocalWsServer {
@@ -67,6 +125,18 @@ impl LocalWsServer {
         self
     }
 
+    /// Enforce one-time dynamic ticket verification during the WebSocket handshake.
+    pub fn with_ticket_auth(mut self, require: bool) -> Self {
+        self.require_ticket = require;
+        self
+    }
+
+    /// Use a specific shared [`TicketStore`].
+    pub fn with_ticket_store(mut self, store: Arc<TicketStore>) -> Self {
+        self.ticket_store = Some(store);
+        self
+    }
+
     /// Bind to `127.0.0.1:port` and start accepting. If `port == 0` the OS
     /// assigns a free port; the actual port is returned via [`RunningServer::actual_port`].
     pub async fn start(self, port: u16) -> Result<RunningServer, WsError> {
@@ -79,6 +149,11 @@ impl LocalWsServer {
         let registry = Arc::new(SinkRegistry::new());
         let sink_capacity = self.sink_capacity;
         let allow_missing_origin = self.allow_missing_origin;
+        let require_ticket = self.require_ticket;
+        let ticket_store = self
+            .ticket_store
+            .clone()
+            .unwrap_or_else(|| Arc::new(TicketStore::new()));
         let handler = Arc::new(self.build_handler(Arc::clone(&registry)));
         let allowed_origins = Arc::new(
             self.allowed_origins
@@ -89,6 +164,7 @@ impl LocalWsServer {
         let shutdown_for_task = Arc::clone(&shutdown_notify);
 
         let conn_counter = Arc::new(AtomicUsize::new(0usize));
+        let ticket_store_for_task = Arc::clone(&ticket_store);
 
         let join = tokio::spawn(async move {
             let mut tasks: JoinSet<()> = JoinSet::new();
@@ -137,11 +213,13 @@ impl LocalWsServer {
                         let h = Arc::clone(&handler);
                         let origins = Arc::clone(&allowed_origins);
                         let allow_missing = allow_missing_origin;
+                        let store = Arc::clone(&ticket_store_for_task);
+                        let need_ticket = require_ticket;
 
                         tasks.spawn(async move {
                             // Decrement counter on exit via RAII guard.
                             let _guard = ConnGuard(cnt);
-                            match upgrade_handshake(stream, origins, allow_missing).await {
+                            match upgrade_handshake(stream, origins, allow_missing, store, need_ticket).await {
                                 Ok(ws_stream) => {
                                     handle_connection(ws_stream, h).await;
                                 }
@@ -169,6 +247,7 @@ impl LocalWsServer {
             shutdown_notify,
             registry,
             sink_capacity,
+            ticket_store,
         })
     }
 
@@ -233,6 +312,7 @@ pub struct RunningServer {
     pub(crate) shutdown_notify: Arc<tokio::sync::Notify>,
     pub(crate) registry: Arc<SinkRegistry>,
     pub(crate) sink_capacity: Option<usize>,
+    pub(crate) ticket_store: Arc<TicketStore>,
 }
 
 impl Drop for RunningServer {
@@ -249,6 +329,16 @@ impl RunningServer {
     /// this reflects the OS-assigned port.
     pub fn actual_port(&self) -> u16 {
         self.actual_port
+    }
+
+    /// Issue an ephemeral one-time authentication ticket valid for `ttl`.
+    pub fn issue_ticket(&self, ttl: Duration) -> String {
+        self.ticket_store.issue(ttl)
+    }
+
+    /// Access the underlying [`TicketStore`].
+    pub fn ticket_store(&self) -> Arc<TicketStore> {
+        Arc::clone(&self.ticket_store)
     }
 
     /// Subscribe and obtain both the [`DataSink`] (sender) and the matching
@@ -268,14 +358,6 @@ impl RunningServer {
             .sink_capacity
             .unwrap_or(crate::DEFAULT_SINK_CAPACITY);
         let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(cap);
-        // Move `tx` into the registry (no clone). The returned `DataSink`
-        // wraps a clone so the subscriber can still push frames, but when
-        // both the DataSink and the registry entry detect the channel is
-        // closed (receiver dropped), publish() prunes the slot.
-        //
-        // The registry holds the original; DataSink gets a clone. When the
-        // receiver (rx) is dropped, both clones detect closure via
-        // `is_closed()`. The registry entry is pruned on the next publish.
         if let Ok(mut v) = self.registry.sinks.lock() {
             v.push(tx.clone());
         }
@@ -318,16 +400,20 @@ fn default_allowed_origins() -> Vec<String> {
 /// oversized frames on the loopback connection.
 const MAX_WS_MESSAGE_SIZE: usize = 16 << 20;
 
-/// Perform the WebSocket handshake, rejecting forbidden origins BEFORE the
-/// upgrade completes.
+/// Perform the WebSocket handshake, rejecting forbidden origins or unauthenticated
+/// tickets BEFORE the upgrade completes.
 async fn upgrade_handshake(
     stream: TcpStream,
     allowed: Arc<Vec<String>>,
     allow_missing_origin: bool,
+    ticket_store: Arc<TicketStore>,
+    require_ticket: bool,
 ) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>, WsError> {
-    let cb = OriginCallback {
+    let cb = HandshakeCallback {
         allowed,
         allow_missing_origin,
+        ticket_store,
+        require_ticket,
     };
     let config = Some(tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
         max_message_size: Some(MAX_WS_MESSAGE_SIZE),
@@ -338,15 +424,14 @@ async fn upgrade_handshake(
 }
 
 /// Handshake callback struct implementing `tungstenite::handshake::server::Callback`.
-/// Using a named struct (instead of a closure) lets the compiler infer the
-/// higher-ranked lifetime bound on `&Request` — closures that capture by move
-/// pin a specific lifetime and fail HRTB inference.
-struct OriginCallback {
+struct HandshakeCallback {
     allowed: Arc<Vec<String>>,
     allow_missing_origin: bool,
+    ticket_store: Arc<TicketStore>,
+    require_ticket: bool,
 }
 
-impl tokio_tungstenite::tungstenite::handshake::server::Callback for OriginCallback {
+impl tokio_tungstenite::tungstenite::handshake::server::Callback for HandshakeCallback {
     fn on_request(
         self,
         req: &Request,
@@ -355,21 +440,58 @@ impl tokio_tungstenite::tungstenite::handshake::server::Callback for OriginCallb
         Response,
         tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
     > {
-        check_origin(req, resp, &self.allowed, self.allow_missing_origin)
+        check_handshake(
+            req,
+            resp,
+            &self.allowed,
+            self.allow_missing_origin,
+            &self.ticket_store,
+            self.require_ticket,
+        )
     }
 }
 
+/// Extract authentication ticket from URI query param, Sec-WebSocket-Protocol,
+/// or X-XBridge-Ticket header.
+fn extract_ticket(req: &Request) -> Option<String> {
+    // 1. Query param: `ticket` or `token`
+    if let Some(query) = req.uri().query() {
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == "ticket" || k == "token" {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    // 2. Sec-WebSocket-Protocol (e.g. "xbridge-ticket.<value>" or "ticket.<value>")
+    if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol").and_then(|v| v.to_str().ok()) {
+        for sub in proto.split(',') {
+            let sub = sub.trim();
+            if let Some(t) = sub.strip_prefix("xbridge-ticket.") {
+                return Some(t.to_string());
+            } else if let Some(t) = sub.strip_prefix("ticket.") {
+                return Some(t.to_string());
+            }
+        }
+    }
+    // 3. X-XBridge-Ticket header
+    if let Some(t) = req.headers().get("X-XBridge-Ticket").and_then(|v| v.to_str().ok()) {
+        return Some(t.trim().to_string());
+    }
+    None
+}
+
 /// Callback invoked by tungstenite during the handshake. Returns `Err(response)`
-/// (a `Response<Option<String>>` with a 403 status) when the origin is not
-/// allowed; tungstenite then aborts the handshake and the TCP socket is
-/// dropped. On success returns `Ok(response)` with the (possibly amended)
-/// upgrade response.
+/// when the origin or ticket is not allowed; tungstenite then aborts the handshake.
 #[allow(clippy::result_large_err)]
-fn check_origin(
+fn check_handshake(
     req: &Request,
     resp: Response,
     allowed: &[String],
     allow_missing_origin: bool,
+    ticket_store: &TicketStore,
+    require_ticket: bool,
 ) -> Result<Response, tokio_tungstenite::tungstenite::handshake::server::ErrorResponse> {
     let origin = req
         .headers()
@@ -378,37 +500,63 @@ fn check_origin(
         .and_then(|r| r.ok())
         .map(|s| s.to_string());
 
-    let ok = match origin {
+    let origin_ok = match origin {
         Some(ref o) => {
-            // Reject "null" origin (sent by sandboxed iframes, file:// URIs,
-            // data: URIs, cross-origin redirects) — it must never be treated
-            // as a valid origin. Also reject "*" as a wildcard — callers must
-            // use `allow_missing_origin = true` if they need to accept all.
             if o == "null" || o == "*" {
                 warn!("ws handshake rejected: unsafe origin value '{o}'");
-                return Err(reject_response(o));
+                return Err(reject_response(StatusCode::FORBIDDEN, o));
             }
             allowed.iter().any(|a| origin_matches(a, o))
         }
-        // No Origin header: reject by default for security. Callers who
-        // need to accept non-browser clients (e.g. raw WebSocket clients)
-        // must explicitly set `allow_missing_origin = true`.
         None => allow_missing_origin,
     };
 
-    if !ok {
+    if !origin_ok {
         let origin_dbg = origin.unwrap_or_else(|| "<missing>".into());
         warn!("ws handshake rejected: forbidden origin {origin_dbg}");
-        return Err(reject_response(&origin_dbg));
+        return Err(reject_response(
+            StatusCode::FORBIDDEN,
+            &format!("forbidden origin: {origin_dbg}"),
+        ));
     }
+
+    // 2. Check Ticket if required or provided
+    let ticket = extract_ticket(req);
+    if require_ticket {
+        match ticket {
+            Some(ref t) => {
+                if !ticket_store.consume(t) {
+                    warn!("ws handshake rejected: invalid or expired ticket");
+                    return Err(reject_response(
+                        StatusCode::UNAUTHORIZED,
+                        "invalid or expired ticket",
+                    ));
+                }
+            }
+            None => {
+                warn!("ws handshake rejected: missing required authentication ticket");
+                return Err(reject_response(
+                    StatusCode::UNAUTHORIZED,
+                    "missing required authentication ticket",
+                ));
+            }
+        }
+    } else if let Some(ref t) = ticket {
+        // Optional consumption
+        let _ = ticket_store.consume(t);
+    }
+
     Ok(resp)
 }
 
-/// Build a 403 `ErrorResponse` carrying a short rejection reason as the body.
-fn reject_response(reason: &str) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+/// Build an `ErrorResponse` carrying a rejection reason.
+fn reject_response(
+    status: StatusCode,
+    reason: &str,
+) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
     tokio_tungstenite::tungstenite::http::Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .body(Some(format!("origin forbidden: {reason}")))
+        .status(status)
+        .body(Some(format!("rejected: {reason}")))
         .unwrap_or_else(|_| {
             tokio_tungstenite::tungstenite::http::Response::new(Some(
                 "403 Forbidden".to_string(),
@@ -435,11 +583,38 @@ fn origin_matches(allowed: &str, actual: &str) -> bool {
     if allowed == actual {
         return true;
     }
-    // Try to strip default ports for comparison.
-    // `https://host:443` == `https://host`, `http://host:80` == `http://host`
     let norm_allowed = normalize_origin(allowed);
     let norm_actual = normalize_origin(actual);
-    norm_allowed == norm_actual
+    if norm_allowed == norm_actual {
+        return true;
+    }
+    matches_wildcard_pattern(&norm_allowed, &norm_actual)
+}
+
+/// Safely match wildcard patterns (e.g. `https://*.example.com`) against actual origins,
+/// strictly enforcing DNS dot boundaries.
+fn matches_wildcard_pattern(pattern: &str, actual: &str) -> bool {
+    let (p_scheme, p_host) = match pattern.split_once("://") {
+        Some(pair) => pair,
+        None => return false,
+    };
+    let (a_scheme, a_host) = match actual.split_once("://") {
+        Some(pair) => pair,
+        None => return false,
+    };
+    if p_scheme != a_scheme {
+        return false;
+    }
+    if let Some(root_domain) = p_host.strip_prefix("*.") {
+        if a_host == root_domain {
+            return true;
+        }
+        if a_host.ends_with(root_domain) && a_host.len() > root_domain.len() {
+            let prefix = &a_host[..a_host.len() - root_domain.len()];
+            return prefix.ends_with('.');
+        }
+    }
+    false
 }
 
 /// Strip default ports (443 for https, 80 for http) from an origin string.
@@ -484,3 +659,31 @@ impl std::fmt::Debug for RunningServer {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_origin_matches_exact_and_default_ports() {
+        assert!(origin_matches("https://example.com", "https://example.com"));
+        assert!(origin_matches("https://example.com", "https://example.com:443"));
+        assert!(origin_matches("https://example.com:443", "https://example.com"));
+        assert!(origin_matches("http://localhost", "http://localhost:80"));
+        assert!(!origin_matches("https://example.com", "https://example.com:8443"));
+        assert!(!origin_matches("https://example.com", "http://example.com"));
+    }
+
+    #[test]
+    fn test_origin_matches_wildcards_and_dns_boundaries() {
+        assert!(origin_matches("https://*.example.com", "https://example.com"));
+        assert!(origin_matches("https://*.example.com", "https://app.example.com"));
+        assert!(origin_matches("https://*.example.com", "https://sub.app.example.com"));
+        // Suffix spoofing prevention
+        assert!(!origin_matches("https://*.example.com", "https://attacker-example.com"));
+        assert!(!origin_matches("https://*.example.com", "https://example.com.evil.com"));
+        // Scheme mismatch
+        assert!(!origin_matches("https://*.example.com", "http://app.example.com"));
+    }
+}
+

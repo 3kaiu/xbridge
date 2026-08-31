@@ -209,7 +209,7 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
             guard let args = call.arguments as? [String: Any] else {
                 result(FlutterError(
                     code: "INVALID_ARGUMENTS",
-                    message: "Expected {allowedOrigins: [String], allowAll: Bool}",
+                    message: "Expected {allowedOrigins: [String], allowAll: Bool, publicMethods: [String], originMethodRules: [String: [String]]}",
                     details: nil
                 ))
                 return
@@ -221,10 +221,26 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
                 origins = Set(originArray)
             }
 
+            var publicMethods: Set<String> = []
+            if let pubArray = args["publicMethods"] as? [String] {
+                publicMethods = Set(pubArray)
+            }
+
+            var originMethodRules: [String: Set<String>] = [:]
+            if let rulesMap = args["originMethodRules"] as? [String: [String]] {
+                for (origin, methods) in rulesMap {
+                    originMethodRules[origin] = Set(methods)
+                }
+            }
+
             if allowAll {
                 self.securityPolicy = .allowAll()
             } else {
-                self.securityPolicy = .allowlist(origins)
+                self.securityPolicy = .capabilities(
+                    allowedOrigins: origins,
+                    publicMethods: publicMethods,
+                    originMethodRules: originMethodRules
+                )
             }
             result(nil)
 

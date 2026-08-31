@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "XBridge 跨端桥接系统架构全景",
+    "locale": "zh-CN",
+    "output": "xbridge-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "tri-state-channels",
+        "label": "三态通信通道全景",
+        "focus": ["h5_app", "xbridge_js", "standard_adapter", "sync_adapter", "flutter_bridge", "rust_core"],
+        "note": "展示常规异步 RPC、同步直连 Bypass 与本地 WS 流媒体三态通道的分流与协作。"
+      },
+      {
+        "id": "flutter-hybrid-path",
+        "label": "Flutter 混合栈桥接",
+        "focus": ["xbridge_js", "standard_adapter", "flutter_bridge", "protocol", "security_policy"],
+        "note": "H5 与 Flutter 容器间基于 JSON-RPC 协议与安全白名单的完整异步交互链路。"
+      },
+      {
+        "id": "native-and-rust-core",
+        "label": "Native 同步与 Rust 流引擎",
+        "focus": ["sync_adapter", "android_core", "ios_core", "rust_core"],
+        "note": "原生直连同步通道与 Rust loopback WebSocket 零拷贝二进制数据通道。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "h5_app",
+      "type": "frontend",
+      "label": "H5 Web App",
+      "sublabel": "Vue / React / 原生 H5",
+      "tag": "业务层",
+      "pos": [40, 260],
+      "size": [130, 60]
+    },
+    {
+      "id": "xbridge_js",
+      "type": "frontend",
+      "label": "xbridge-js",
+      "sublabel": "XBridgeCore / Dispatcher",
+      "tag": "环境嗅探与分发",
+      "pos": [260, 260],
+      "size": [150, 60]
+    },
+    {
+      "id": "security_policy",
+      "type": "security",
+      "label": "Security Policy",
+      "sublabel": "Origin 校验 & 方法级 ACL",
+      "tag": "Fail-Closed & Ticket Auth",
+      "pos": [510, 100],
+      "size": [160, 60]
+    },
+    {
+      "id": "standard_adapter",
+      "type": "frontend",
+      "label": "StandardAdapter",
+      "sublabel": "window.XBridge.postMessage",
+      "tag": "异步 RPC 通道",
+      "pos": [510, 260],
+      "size": [160, 60]
+    },
+    {
+      "id": "sync_adapter",
+      "type": "frontend",
+      "label": "NativeSyncAdapter",
+      "sublabel": "window.dsbridge / prompt()",
+      "tag": "同步 Bypass 通道",
+      "pos": [510, 420],
+      "size": [160, 60]
+    },
+    {
+      "id": "rust_core",
+      "type": "backend",
+      "brand": "rust",
+      "label": "xbridge_core (Rust)",
+      "sublabel": "127.0.0.1 本地 WS 服务",
+      "tag": "二进制零拷贝流",
+      "pos": [510, 580],
+      "size": [160, 60]
+    },
+    {
+      "id": "protocol",
+      "type": "backend",
+      "label": "xbridge_protocol",
+      "sublabel": "JSON-RPC 协议解析器",
+      "tag": "纯 Dart 协议层",
+      "pos": [770, 100],
+      "size": [160, 60]
+    },
+    {
+      "id": "flutter_bridge",
+      "type": "backend",
+      "label": "xbridge_flutter",
+      "sublabel": "BridgeController 路由",
+      "tag": "Flutter 插件",
+      "pos": [770, 260],
+      "size": [160, 60]
+    },
+    {
+      "id": "android_core",
+      "type": "backend",
+      "label": "xbridge-android",
+      "sublabel": "XBridgeSyncInterface",
+      "tag": "JitPack AAR",
+      "pos": [770, 420],
+      "size": [160, 60]
+    },
+    {
+      "id": "ios_core",
+      "type": "backend",
+      "label": "xbridge-ios",
+      "sublabel": "XBridgeSyncHandler",
+      "tag": "CocoaPods",
+      "pos": [770, 580],
+      "size": [160, 60]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "H5 Web 运行上下文",
+      "wraps": ["h5_app", "xbridge_js", "standard_adapter", "sync_adapter"]
+    },
+    {
+      "kind": "region",
+      "label": "Flutter 混合栈引擎",
+      "wraps": ["flutter_bridge", "protocol", "security_policy"]
+    },
+    {
+      "kind": "region",
+      "label": "Native 原生容器与 Rust 核心",
+      "wraps": ["android_core", "ios_core", "rust_core"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "app-call",
+      "from": "h5_app",
+      "to": "xbridge_js",
+      "label": "call / callSync",
+      "variant": "emphasis"
+    },
+    {
+      "id": "js-to-standard",
+      "from": "xbridge_js",
+      "to": "standard_adapter",
+      "label": "异步 RPC",
+      "variant": "emphasis"
+    },
+    {
+      "id": "js-to-sync",
+      "from": "xbridge_js",
+      "to": "sync_adapter",
+      "label": "同步 Bypass",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "js-to-rust",
+      "from": "xbridge_js",
+      "to": "rust_core",
+      "label": "WS 二进制流",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "standard-to-flutter",
+      "from": "standard_adapter",
+      "to": "flutter_bridge",
+      "label": "postMessage",
+      "variant": "emphasis"
+    },
+    {
+      "id": "protocol-to-flutter",
+      "from": "protocol",
+      "to": "flutter_bridge",
+      "label": "协议支持",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "security-to-protocol",
+      "from": "security_policy",
+      "to": "protocol",
+      "label": "白名单校验",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "sync-to-android",
+      "from": "sync_adapter",
+      "to": "android_core",
+      "label": "JSInterface",
+      "variant": "default"
+    },
+    {
+      "id": "sync-to-ios",
+      "from": "sync_adapter",
+      "to": "ios_core",
+      "label": "ScriptHandler",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "rust-to-ios",
+      "from": "rust_core",
+      "to": "ios_core",
+      "label": "C-ABI / FFI",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "三态通道架构",
+      "items": [
+        "Async Bridge: 基于 JSON-RPC 2.0 的异步请求/响应与事件推送，解耦跨端调用",
+        "Sync Bypass: 原生接口直连，免异步微任务开销，极速读取 Token 与环境变量",
+        "Local WS Server: 本地 127.0.0.1 高性能 WebSocket，二进制帧零序列化全双工传输"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "多层独立与无业务耦合",
+      "items": [
+        "H5 层 (@3kaiu/xbridge-js) 支持自动嗅探与降级，提供统一 call / callSync 门面",
+        "Flutter 层 (xbridge_flutter) 统一路由与生命周期管理，支持反向 H5 调用与事件广播",
+        "Native / Rust 模块独立发布 (AAR / CocoaPods / Crates.io)，按需集成"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "安全与异常治理",
+      "items": [
+        "SecurityPolicy 严格 Origin 白名单与安全泛域名匹配，杜绝非授权页面调用",
+        "方法级权限矩阵（Capability-Based ACL），支持公共方法与敏感能力按域名分权",
+        "Rust 本地 WS 采用动态一次性 Ticket 握手鉴权 + Loopback-Only 绑定，彻底防御跨进程探测",
+        "内置单调时钟与 LRU 状态桶的 BridgeRateLimiter 频控，防止 DoS 与暴力爆破",
+        "防风暴聚合结构化安全事件遥测（BridgeSecurityTelemetry）与递归敏感字段脱敏",
+        "Fail-Closed 默认闭合策略，全链路异常转换为统一 BridgeError"
+      ]
+    }
+  ]
+}

@@ -37,7 +37,7 @@ pub use ffi::{xbridge_ffi_echo, xbridge_ffi_free, xbridge_ffi_ping};
 pub use control::{ControlMessage, ControlResponse};
 pub use error::WsError;
 pub use handler::{ConnectionHandler, ConnectionHandlerBuilder};
-pub use server::{LocalWsServer, RunningServer};
+pub use server::{LocalWsServer, RunningServer, TicketStore};
 pub use sink::DataSink;
 
 /// Maximum number of concurrent WS connections the local server will accept.

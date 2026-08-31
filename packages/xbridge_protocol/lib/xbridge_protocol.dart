@@ -8,4 +8,7 @@ export 'src/bridge_request.dart';
 export 'src/bridge_response.dart';
 export 'src/bridge_script_builder.dart';
 export 'src/bridge_transport.dart';
+export 'src/log_masker.dart';
+export 'src/rate_limiter.dart';
 export 'src/security_policy.dart';
+export 'src/security_telemetry.dart';

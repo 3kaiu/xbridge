@@ -255,16 +255,22 @@ class XBridgePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             CTRL_SET_POLICY -> {
                 val origins = call.argument<List<String>>("allowedOrigins") ?: emptyList()
                 val allowAll = call.argument<Boolean>("allowAll") ?: false
+                val publicMethods = call.argument<List<String>>("publicMethods") ?: emptyList()
+                val rulesRaw = call.argument<Map<String, List<String>>>("originMethodRules") ?: emptyMap()
+                val originMethodRules = rulesRaw.mapValues { it.value.toSet() }
+
                 val newPolicy = XBridgeSecurityPolicy(
                     allowedOrigins = origins.toSet(),
                     allowAll = allowAll,
+                    publicMethods = publicMethods.toSet(),
+                    originMethodRules = originMethodRules,
                 )
                 securityPolicy = newPolicy
                 // Keep XBridgePluginRegistry in sync so the sync bypass path
                 // (XBridgeSyncInterface reads via the registry's lambda provider)
                 // uses the same policy as the async bridge path.
                 XBridgePluginRegistry.updateSecurityPolicy(newPolicy)
-                Log.i(TAG, "Security policy updated: allowAll=$allowAll, origins=${origins.size}")
+                Log.i(TAG, "Security policy updated: allowAll=$allowAll, origins=${origins.size}, publicMethods=${publicMethods.size}")
                 result.success(null)
             }
 

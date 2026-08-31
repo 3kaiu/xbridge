@@ -73,8 +73,47 @@ void main() {
       final policy = XBridgeSecurityPolicy.allowlist({'https://example.com'});
       expect(policy.allows('https://example.com'), isTrue);
       expect(policy.allows('https://example.com/'), isTrue);
+      expect(policy.allows('https://example.com:443'), isTrue);
       expect(policy.allows('https://malicious.com'), isFalse);
       expect(policy.allows(null), isFalse);
+      expect(policy.allows('null'), isFalse);
+      expect(policy.allows('*'), isFalse);
+    });
+
+    test('wildcard domain matching adheres to strict DNS boundaries', () {
+      final policy = XBridgeSecurityPolicy.allowlist({'https://*.example.com'});
+      expect(policy.allows('https://example.com'), isTrue);
+      expect(policy.allows('https://app.example.com'), isTrue);
+      expect(policy.allows('https://sub.app.example.com'), isTrue);
+      // DNS boundary check: attacker-example.com must NOT be allowed
+      expect(policy.allows('https://attacker-example.com'), isFalse);
+      expect(policy.allows('https://example.com.evil.com'), isFalse);
+      expect(policy.allows('http://app.example.com'), isFalse); // scheme mismatch
+    });
+
+    test('capabilities policy enforces granular method-level permissions', () {
+      final policy = XBridgeSecurityPolicy.capabilities(
+        allowedOrigins: {'https://app.example.com', 'https://partner.com'},
+        publicMethods: {'getAppInfo', 'ping'},
+        originMethodRules: {
+          'https://app.example.com': {'payment', 'storage.write'},
+          'https://partner.com': {'share'},
+        },
+      );
+
+      // Public methods accessible to all allowed origins
+      expect(policy.isMethodAllowed('https://app.example.com', 'getAppInfo'), isTrue);
+      expect(policy.isMethodAllowed('https://partner.com', 'getAppInfo'), isTrue);
+
+      // Specific methods
+      expect(policy.isMethodAllowed('https://app.example.com', 'payment'), isTrue);
+      expect(policy.isMethodAllowed('https://partner.com', 'payment'), isFalse);
+      expect(policy.isMethodAllowed('https://partner.com', 'share'), isTrue);
+      expect(policy.isMethodAllowed('https://app.example.com', 'share'), isFalse);
+
+      // Untrusted origins rejected for all methods
+      expect(policy.isMethodAllowed('https://evil.com', 'getAppInfo'), isFalse);
+      expect(policy.isMethodAllowed('https://evil.com', 'payment'), isFalse);
     });
   });
 }

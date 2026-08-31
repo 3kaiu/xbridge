@@ -64,6 +64,10 @@ class MethodChannelXBridgePlatform extends XBridgePlatform {
       <String, dynamic>{
         'allowedOrigins': policy.allowedOrigins.toList(),
         'allowAll': policy.allowAll,
+        'publicMethods': policy.publicMethods.toList(),
+        'originMethodRules': policy.originMethodRules.map(
+          (origin, methods) => MapEntry(origin, methods.toList()),
+        ),
       },
     );
   }

@@ -101,10 +101,10 @@ class XBridgeSyncInterface(
         // Security policy check (defense-in-depth).
         val policy = securityPolicyProvider()
         val origin = originProvider()
-        if (!policy.allows(origin)) {
+        if (!policy.isMethodAllowed(origin, method)) {
             return errorJson(
-                "ORIGIN_NOT_ALLOWED",
-                "Origin '$origin' is not permitted by the security policy",
+                "BRIDGE_METHOD_FORBIDDEN",
+                "Origin '$origin' is not permitted to call method '$method' by the security policy",
             )
         }
 
