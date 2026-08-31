@@ -25,7 +25,7 @@ pub enum WsError {
     /// a malformed request or the origin was forbidden (in which case we
     /// returned a 403 and the client aborted).
     #[error("ws handshake failed: {0}")]
-    Handshake(#[from] tokio_tungstenite::tungstenite::Error),
+    Handshake(#[from] Box<tokio_tungstenite::tungstenite::Error>),
 
     /// Graceful shutdown encountered an internal error.
     #[error("shutdown failed")]
@@ -71,3 +71,10 @@ impl WsError {
         }
     }
 }
+
+impl From<tokio_tungstenite::tungstenite::Error> for WsError {
+    fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        WsError::Handshake(Box::new(err))
+    }
+}
+

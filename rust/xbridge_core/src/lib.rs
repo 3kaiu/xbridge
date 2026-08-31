@@ -22,6 +22,8 @@
 //! - [`control`] — generic `ControlMessage` / `ControlResponse`.
 //! - [`bridge`] — thin C-ABI for Android JNI / Swift bindings.
 
+#![allow(clippy::result_large_err)]
+
 pub mod bridge;
 pub mod control;
 pub mod error;
