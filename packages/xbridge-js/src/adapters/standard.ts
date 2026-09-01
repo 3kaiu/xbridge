@@ -61,6 +61,19 @@ function getWindow(): WindowWithXBridge | undefined {
     : undefined;
 }
 
+/**
+ * Extract the JSON-RPC `method` from a serialized message. Used only in error
+ * paths so it adds zero overhead on the happy path.
+ * @internal
+ */
+function extractMethod(message: string): string {
+  try {
+    return (JSON.parse(message) as { method?: string }).method ?? "<unknown>";
+  } catch {
+    return "<parse-error>";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal invalidation hook for the sniff cache (W2)
 //
@@ -144,9 +157,11 @@ export class StandardAdapter implements IXBridgeAdapter {
 
   send(message: string): void {
     if (this.isBroken) {
+      // Extract method so ARMS shows which call hit the circuit breaker.
+      const method = extractMethod(message);
       throw new XBridgeSendError(
-        "[XBridge] StandardAdapter: postMessage is disabled due to a previous runtime error. " +
-        "Page is running outside a supported native container.",
+        `[XBridge] StandardAdapter: postMessage is disabled (circuit-breaker tripped). ` +
+        `Attempted call('${method}'). Bridge postMessage is unavailable after a previous runtime error.`,
       );
     }
     const w = getWindow();
@@ -165,10 +180,32 @@ export class StandardAdapter implements IXBridgeAdapter {
         // Circuit breaker tripped: mark broken so subsequent calls fail fast
         // and isAvailable() / isConnected() correctly reflect the broken state.
         this.isBroken = true;
+
+        // ── Diagnostic snapshot (triage for InvalidAccessError) ──────────
+        const method = extractMethod(message);
         const detail = err instanceof Error ? err.message : String(err);
+        const errorName = err instanceof Error ? err.name : undefined;
+        if (typeof console !== "undefined") {
+          console.error("[XBridge] postMessage threw — diagnostic snapshot:", {
+            method,
+            errorName,
+            errorMessage: detail,
+            messageLength: message.length,
+            timestamp: Date.now(),
+            visibilityState: typeof document !== "undefined" ? document.visibilityState : undefined,
+            readyState: typeof document !== "undefined" ? document.readyState : undefined,
+            href: typeof location !== "undefined" ? location.href : undefined,
+            userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+            xbridgeExists: w.XBridge !== undefined,
+            postMessageType: typeof w.XBridge?.postMessage,
+          });
+        }
+        // ── End diagnostic snapshot ──────────────────────────────────────
+
         throw new XBridgeSendError(
-          `[XBridge] StandardAdapter: postMessage is present but threw on invocation (${detail}). ` +
-          "This typically means the page is running outside a supported native container.",
+          `[XBridge] StandardAdapter: postMessage threw on call('${method}') ` +
+          `(${errorName ?? "Error"}: ${detail}). ` +
+          "This may indicate that the native bridge is unavailable, detached, or running outside a supported native container.",
           err,
         );
       }
