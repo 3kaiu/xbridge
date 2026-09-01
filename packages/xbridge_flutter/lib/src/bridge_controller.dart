@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:xbridge_platform_interface/xbridge_platform_interface.dart';
 import 'package:xbridge_protocol/xbridge_protocol.dart';
 
 import 'fallback_channel.dart';
@@ -87,9 +88,12 @@ class BridgeController {
     _fallbackHandler = handler;
   }
 
-  /// Installs [policy].
+  /// Installs [policy] and synchronizes it to the native platform if available.
   void setSecurityPolicy(XBridgeSecurityPolicy? policy) {
     _policy = policy;
+    if (policy != null && XBridgePlatform.hasInstance) {
+      XBridgePlatform.instance.setSecurityPolicy(policy).catchError((_) {});
+    }
   }
 
   /// Installs a concrete [BridgeTransport] (e.g. from an adapter).

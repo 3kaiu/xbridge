@@ -14,18 +14,63 @@ class BridgeScriptBuilder {
 (function() {
   'use strict';
   if (window.__xbridge_initialized__) return;
-  Object.defineProperty(window, '__xbridge_initialized__', {
-    value: true, writable: false, configurable: false, enumerable: false
-  });
+  try {
+    Object.defineProperty(window, '__xbridge_initialized__', {
+      value: true, writable: false, configurable: true, enumerable: false
+    });
+  } catch(e) { window.__xbridge_initialized__ = true; }
+
   var bridge = window.__XBridge__ || {};
   bridge.resolve = bridge.resolve || function(){};
   bridge.reject = bridge.reject || function(){};
-  Object.defineProperty(window, '__XBridge__', {
-    value: bridge, writable: false, configurable: false, enumerable: false
-  });
-  Object.defineProperty(window, '__XBridgeInbound__', {
-    value: function(){}, writable: true, configurable: false, enumerable: false
-  });
+  try {
+    Object.defineProperty(window, '__XBridge__', {
+      value: bridge, writable: true, configurable: true, enumerable: false
+    });
+  } catch(e) { window.__XBridge__ = bridge; }
+
+  try {
+    Object.defineProperty(window, '__XBridgeInbound__', {
+      value: function(){}, writable: true, configurable: true, enumerable: false
+    });
+  } catch(e) { window.__XBridgeInbound__ = function(){}; }
+
+  // Auto-polyfill window.XBridge.postMessage for flutter_inappwebview and bare WKWebView
+  if (!window.XBridge || typeof window.XBridge.postMessage !== 'function') {
+    var shim = window.XBridge || {};
+    shim.postMessage = function(msg) {
+      // Preserve `this` for WebView impls that rely on it, and surface
+      // InvalidAccessError (forMainFrameOnly) to the JS adapter layer so
+      // it can trigger circuit-breaker + fallback handling.
+      if (window.flutter_inappwebview && typeof window.flutter_inappwebview.callHandler === 'function') {
+        try {
+          window.flutter_inappwebview.callHandler.call(window.flutter_inappwebview, 'XBridge', msg);
+        } catch (e) { throw e; }
+      } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.XBridge && typeof window.webkit.messageHandlers.XBridge.postMessage === 'function') {
+        try {
+          var handler = window.webkit.messageHandlers.XBridge;
+          handler.postMessage.call(handler, msg);
+        } catch (e) { throw e; }
+      } else {
+        // No native handler available — throw so StandardAdapter can treat
+        // this as transient "not ready" rather than silently dropping.
+        throw new Error('XBridge handler not available');
+      }
+    };
+    try {
+      window.XBridge = shim;
+    } catch(e) {}
+  }
+
+  try {
+    Object.defineProperty(window, '__xbridge_ready__', {
+      value: true, writable: true, configurable: true, enumerable: false
+    });
+  } catch(e) { window.__xbridge_ready__ = true; }
+
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('XBridgeReady', { detail: { timestamp: Date.now() } }));
+  }
 })();
 ''';
 

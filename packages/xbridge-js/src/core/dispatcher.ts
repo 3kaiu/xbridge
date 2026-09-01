@@ -112,50 +112,60 @@ export class Dispatcher {
     });
   }
 
-  /** Resolve a pending request by id. No-op if unknown (e.g. timed out). */
-  resolve(id: string, result: unknown): void {
-    const entry = this.pending.get(id);
+  /**
+   * Resolve a pending request by id. Normalizes via `String(id)` so that a
+   * numeric `123` from native and string `"123"` from JS map to the same entry
+   * — permissive interop (host may coerce types). The reverse collision
+   * (string vs number sharing same digits) is negligible: client ids are
+   * UUID strings, host echoes same type per JSON-RPC; `String()` maximizes
+   * cross-type compatibility over strict type separation.
+   */
+  resolve(id: string | number, result: unknown): void {
+    const key = String(id);
+    const entry = this.pending.get(key);
     if (entry === undefined) {
       return;
     }
     if (entry.timer !== undefined) {
       clearTimeout(entry.timer);
     }
-    this.pending.delete(id);
+    this.pending.delete(key);
     entry.resolve(result);
   }
 
   /** Reject a pending request by id. No-op if unknown. */
-  reject(id: string, error: unknown): void {
-    const entry = this.pending.get(id);
+  reject(id: string | number, error: unknown): void {
+    const key = String(id);
+    const entry = this.pending.get(key);
     if (entry === undefined) {
       return;
     }
     if (entry.timer !== undefined) {
       clearTimeout(entry.timer);
     }
-    this.pending.delete(id);
+    this.pending.delete(key);
     entry.reject(error);
   }
 
   /** Whether a pending request with this id exists. */
-  has(id: string): boolean {
-    return this.pending.has(id);
+  has(id: string | number): boolean {
+    return this.pending.has(String(id));
   }
 
   /**
    * Cancel a pending request without resolving/rejecting it (e.g. the caller
    * gave up). Clears the timer and removes the entry. No-op if unknown.
    */
-  cancel(id: string): void {
-    const entry = this.pending.get(id);
+  cancel(id: string | number): void {
+    const key = String(id);
+    const entry = this.pending.get(key);
     if (entry === undefined) {
       return;
     }
     if (entry.timer !== undefined) {
       clearTimeout(entry.timer);
     }
-    this.pending.delete(id);
+    this.pending.delete(key);
   }
 
   /** Cancel every pending request. Used on teardown. */

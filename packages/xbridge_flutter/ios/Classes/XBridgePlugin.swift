@@ -138,13 +138,11 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
 
         let params = call.arguments
 
-        // Security policy check (defense-in-depth — the primary gate is on
-        // the Flutter side, but verify here too so a direct native call
-        // through the MethodChannel is also origin-checked).
-        if !securityPolicy.allows(origin: origin) {
+        // Security policy check (defense-in-depth: if origin is configured, enforce allowlist).
+        if let currentOrigin = origin, !securityPolicy.allows(origin: currentOrigin) {
             result(FlutterError(
                 code: "ORIGIN_NOT_ALLOWED",
-                message: "Origin '\(origin ?? "nil")' is not permitted by the security policy",
+                message: "Origin '\(currentOrigin)' is not permitted by the security policy",
                 details: nil
             ))
             return

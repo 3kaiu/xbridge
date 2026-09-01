@@ -74,6 +74,19 @@ function extractMethod(message: string): string {
   }
 }
 
+/** Sanitize href to pathname + minimal query marker to avoid PII leakage. */
+function sanitizeHref(href: string): string {
+  try {
+    const url = new URL(href);
+    // Keep pathname, drop query values, keep only presence marker
+    const hasQuery = url.search.length > 0;
+    return url.pathname + (hasQuery ? "?<query>" : "") + (url.hash ? "#<hash>" : "");
+  } catch {
+    // Fallback for non-URL hrefs (e.g. about:blank, data:)
+    return href.length > 80 ? href.slice(0, 80) + "…" : href;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal invalidation hook for the sniff cache (W2)
 //
@@ -133,8 +146,16 @@ export class StandardAdapter implements IXBridgeAdapter {
   /** Bound event listener reference so we can remove it in `destroy()`. */
   private boundEventListener: ((ev: Event) => void) | null = null;
 
-  /** Circuit-breaker: set to true if postMessage exists but throws at runtime. */
-  private isBroken = false;
+  /** Circuit-breaker state: CLOSED (healthy), PROBING (probing after cooldown), OPEN (tripped). */
+  private circuitState: "CLOSED" | "PROBING" | "OPEN" = "CLOSED";
+  private failureCount = 0;
+  private lastFailureTime = 0;
+  /** Cooldown before probing again when in OPEN state (1 second). */
+  private static readonly COOLDOWN_MS = 1000;
+  /** Consecutive failures required to trip the circuit breaker. */
+  private static readonly MAX_FAILURES = 2;
+  /** Deduplicate full diagnostic snapshots per method to avoid console flooding. */
+  private loggedMethods: Set<string> = new Set();
 
   /**
    * Invalidate the XBridge environment sniff cache so that a late-injected
@@ -147,23 +168,58 @@ export class StandardAdapter implements IXBridgeAdapter {
     }
   }
 
+  /** Check if the circuit breaker can probe after cooldown. */
+  private canProbe(): boolean {
+    return Date.now() - this.lastFailureTime >= StandardAdapter.COOLDOWN_MS;
+  }
+
+  /** Whether the circuit breaker is currently broken (tripped and cooling down). */
+  get isBroken(): boolean {
+    return this.circuitState === "OPEN" && !this.canProbe();
+  }
+
+  /** Current circuit state for diagnostics and tests. */
+  get state(): "CLOSED" | "PROBING" | "OPEN" {
+    return this.circuitState;
+  }
+
+  /** Reset internal circuit-breaker state back to healthy. */
+  reset(): void {
+    this.circuitState = "CLOSED";
+    this.failureCount = 0;
+    this.lastFailureTime = 0;
+    this.loggedMethods.clear();
+  }
+
   isAvailable(): boolean {
-    if (this.isBroken) {
+    if (this.circuitState === "OPEN" && !this.canProbe()) {
       return false;
     }
     const w = getWindow();
-    return w !== undefined && typeof w.XBridge?.postMessage === "function";
+    if (w === undefined) {
+      return false;
+    }
+    const inapp = (w as unknown as { flutter_inappwebview?: { callHandler?: unknown } }).flutter_inappwebview;
+    return (
+      typeof w.XBridge?.postMessage === "function" ||
+      typeof inapp?.callHandler === "function" ||
+      (w as unknown as { __xbridge_ready__?: boolean }).__xbridge_ready__ === true
+    );
   }
 
   send(message: string): void {
-    if (this.isBroken) {
-      // Extract method so ARMS shows which call hit the circuit breaker.
-      const method = extractMethod(message);
-      throw new XBridgeSendError(
-        `[XBridge] StandardAdapter: postMessage is disabled (circuit-breaker tripped). ` +
-        `Attempted call('${method}'). Bridge postMessage is unavailable after a previous runtime error.`,
-      );
+    if (this.circuitState === "OPEN") {
+      if (this.canProbe()) {
+        this.circuitState = "PROBING";
+      } else {
+        const method = extractMethod(message);
+        throw new XBridgeSendError(
+          `[XBridge] StandardAdapter: postMessage is disabled (circuit-breaker tripped). ` +
+          `Attempted call('${method}'). Bridge postMessage is cooling down after a previous runtime error.`,
+        );
+      }
     }
+
     const w = getWindow();
     if (w === undefined) {
       throw new XBridgeSendError("[XBridge] StandardAdapter: globalThis is not available");
@@ -173,32 +229,56 @@ export class StandardAdapter implements IXBridgeAdapter {
     if (this.handler !== null) {
       this.ensureOverridesInstalled(w);
     }
+
+    // 1. Primary path: standard window.XBridge.postMessage
     if (typeof w.XBridge?.postMessage === "function") {
+      const postFn = w.XBridge.postMessage;
       try {
-        w.XBridge.postMessage(message);
+        // Defensive invocation: ensure w.XBridge is preserved as `this` context
+        postFn.call(w.XBridge, message);
+        // Successful transmission restores health
+        this.circuitState = "CLOSED";
+        this.failureCount = 0;
+        return;
       } catch (err) {
-        // Circuit breaker tripped: mark broken so subsequent calls fail fast
-        // and isAvailable() / isConnected() correctly reflect the broken state.
-        this.isBroken = true;
+        this.failureCount++;
+        this.lastFailureTime = Date.now();
+        if (this.circuitState === "PROBING" || this.failureCount >= StandardAdapter.MAX_FAILURES) {
+          this.circuitState = "OPEN";
+        }
 
         // ── Diagnostic snapshot (triage for InvalidAccessError) ──────────
         const method = extractMethod(message);
         const detail = err instanceof Error ? err.message : String(err);
         const errorName = err instanceof Error ? err.name : undefined;
         if (typeof console !== "undefined") {
-          console.error("[XBridge] postMessage threw — diagnostic snapshot:", {
-            method,
-            errorName,
-            errorMessage: detail,
-            messageLength: message.length,
-            timestamp: Date.now(),
-            visibilityState: typeof document !== "undefined" ? document.visibilityState : undefined,
-            readyState: typeof document !== "undefined" ? document.readyState : undefined,
-            href: typeof location !== "undefined" ? location.href : undefined,
-            userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
-            xbridgeExists: w.XBridge !== undefined,
-            postMessageType: typeof w.XBridge?.postMessage,
-          });
+          const isRepeat = this.loggedMethods.has(method);
+          const rawHref = typeof location !== "undefined" ? location.href : undefined;
+          const sanitizedHref = rawHref ? sanitizeHref(rawHref) : undefined;
+          if (isRepeat) {
+            // Sampled repeat: avoid flooding console on every InvalidAccessError
+            // in high-frequency call sites (e.g. XiaoeEmbed network batch).
+            console.warn(
+              `[XBridge] postMessage threw (repeat) method=${method} error=${errorName ?? "Error"}:${detail} circuit=${this.circuitState}`,
+            );
+          } else {
+            console.error("[XBridge] postMessage threw — diagnostic snapshot:", {
+              method,
+              errorName,
+              errorMessage: detail,
+              circuitState: this.circuitState,
+              failureCount: this.failureCount,
+              messageLength: message.length,
+              timestamp: Date.now(),
+              visibilityState: typeof document !== "undefined" ? document.visibilityState : undefined,
+              readyState: typeof document !== "undefined" ? document.readyState : undefined,
+              href: sanitizedHref,
+              userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+              xbridgeExists: w.XBridge !== undefined,
+              postMessageType: typeof w.XBridge?.postMessage,
+            });
+            this.loggedMethods.add(method);
+          }
         }
         // ── End diagnostic snapshot ──────────────────────────────────────
 
@@ -209,11 +289,38 @@ export class StandardAdapter implements IXBridgeAdapter {
           err,
         );
       }
-    } else {
-      throw new XBridgeSendError(
-        "[XBridge] StandardAdapter: window.XBridge.postMessage is not available",
-      );
     }
+
+    // 2. Transparent fallback path: flutter_inappwebview.callHandler
+    const inapp = (w as unknown as { flutter_inappwebview?: { callHandler?: (handler: string, ...args: unknown[]) => void } }).flutter_inappwebview;
+    if (typeof inapp?.callHandler === "function") {
+      const handlerFn = inapp.callHandler;
+      try {
+        // Preserve `this` (some WebView impls rely on it)
+        handlerFn.call(inapp, "XBridge", message);
+        this.circuitState = "CLOSED";
+        this.failureCount = 0;
+        return;
+      } catch (err) {
+        this.failureCount++;
+        this.lastFailureTime = Date.now();
+        if (this.circuitState === "PROBING" || this.failureCount >= StandardAdapter.MAX_FAILURES) {
+          this.circuitState = "OPEN";
+        }
+        const method = extractMethod(message);
+        throw new XBridgeSendError(
+          `[XBridge] StandardAdapter: flutter_inappwebview.callHandler threw on call('${method}'): ${err}`,
+          err,
+        );
+      }
+    }
+
+    // Neither exists yet — this is a transient "not ready" condition during page startup,
+    // NOT a runtime fatal crash. We throw XBridgeSendError but DO NOT trip the circuit breaker,
+    // allowing subsequent calls to proceed as soon as the bridge is injected.
+    throw new XBridgeSendError(
+      "[XBridge] StandardAdapter: window.XBridge.postMessage is not available",
+    );
   }
 
   onMessage(handler: (raw: string) => void): void {
@@ -270,7 +377,19 @@ export class StandardAdapter implements IXBridgeAdapter {
           }),
         );
       };
-      w.__XBridge__.resolve = this._resolveOverride;
+      try {
+        w.__XBridge__.resolve = this._resolveOverride;
+      } catch {
+        try {
+          Object.defineProperty(w.__XBridge__, "resolve", {
+            value: this._resolveOverride,
+            writable: true,
+            configurable: true,
+          });
+        } catch {
+          // ignore
+        }
+      }
     }
 
     // Override reject — same guard.
@@ -284,7 +403,19 @@ export class StandardAdapter implements IXBridgeAdapter {
           }),
         );
       };
-      w.__XBridge__.reject = this._rejectOverride;
+      try {
+        w.__XBridge__.reject = this._rejectOverride;
+      } catch {
+        try {
+          Object.defineProperty(w.__XBridge__, "reject", {
+            value: this._rejectOverride,
+            writable: true,
+            configurable: true,
+          });
+        } catch {
+          // ignore
+        }
+      }
     }
 
     // Override the inbound request dispatcher — same guard.
@@ -292,7 +423,19 @@ export class StandardAdapter implements IXBridgeAdapter {
       this._inboundOverride = (requestJson: string): void => {
         handler(requestJson);
       };
-      w.__XBridgeInbound__ = this._inboundOverride;
+      try {
+        w.__XBridgeInbound__ = this._inboundOverride;
+      } catch {
+        try {
+          Object.defineProperty(w, "__XBridgeInbound__", {
+            value: this._inboundOverride,
+            writable: true,
+            configurable: true,
+          });
+        } catch {
+          // ignore
+        }
+      }
     }
 
     // Install the XBridgeEvent CustomEvent listener. The host dispatches:
@@ -335,15 +478,23 @@ export class StandardAdapter implements IXBridgeAdapter {
       // because ensureOverridesInstalled captures originals before the first
       // override on each property.
       if (w.__XBridge__ !== undefined) {
-        if (this.saved.resolve !== null) {
-          w.__XBridge__.resolve = this.saved.resolve;
-        } else {
-          delete w.__XBridge__.resolve;
+        try {
+          if (this.saved.resolve !== null) {
+            w.__XBridge__.resolve = this.saved.resolve;
+          } else {
+            delete w.__XBridge__.resolve;
+          }
+        } catch {
+          // Ignore strict mode delete failure on non-configurable property
         }
-        if (this.saved.reject !== null) {
-          w.__XBridge__.reject = this.saved.reject;
-        } else {
-          delete w.__XBridge__.reject;
+        try {
+          if (this.saved.reject !== null) {
+            w.__XBridge__.reject = this.saved.reject;
+          } else {
+            delete w.__XBridge__.reject;
+          }
+        } catch {
+          // Ignore strict mode delete failure on non-configurable property
         }
         // If we created __XBridge__ from scratch and it's now empty, clean up.
         if (
@@ -352,15 +503,23 @@ export class StandardAdapter implements IXBridgeAdapter {
           w.__XBridge__.resolve === undefined &&
           w.__XBridge__.reject === undefined
         ) {
-          delete w.__XBridge__;
+          try {
+            delete w.__XBridge__;
+          } catch {
+            // Ignore strict mode delete failure
+          }
         }
       }
 
       // Restore __XBridgeInbound__
-      if (this.saved.inbound !== null) {
-        w.__XBridgeInbound__ = this.saved.inbound;
-      } else {
-        delete w.__XBridgeInbound__;
+      try {
+        if (this.saved.inbound !== null) {
+          w.__XBridgeInbound__ = this.saved.inbound;
+        } else {
+          delete w.__XBridgeInbound__;
+        }
+      } catch {
+        // Ignore strict mode delete failure
       }
 
       // Remove the XBridgeEvent listener.
@@ -379,6 +538,6 @@ export class StandardAdapter implements IXBridgeAdapter {
     this._rejectOverride = null;
     this._inboundOverride = null;
     this.handler = null;
-    this.isBroken = false;
+    this.reset();
   }
 }

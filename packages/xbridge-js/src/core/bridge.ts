@@ -23,7 +23,7 @@ import type {
   XBridgeRequest,
   XBridgeResponse,
 } from "../types.js";
-import { XBRIDGE_PROTOCOL_VERSION } from "../types.js";
+import { XBRIDGE_PROTOCOL_VERSION, XBridgeSendError } from "../types.js";
 
 /** Event listener signature for {@link XBridgeCore.onEvent}. */
 export type XBridgeEventListener = (params: unknown) => void;
@@ -31,14 +31,23 @@ export type XBridgeEventListener = (params: unknown) => void;
 /** Handler signature for Native→H5 RPC calls. */
 export type XBridgeHandler = (params: unknown) => unknown | Promise<unknown>;
 
+function isSendError(err: unknown): err is XBridgeSendError {
+  return (
+    err instanceof XBridgeSendError ||
+    (err instanceof Error && err.name === "XBridgeSendError")
+  );
+}
+
 function isResponse(msg: XBridgeMessage): msg is XBridgeResponse {
-  return typeof (msg as XBridgeResponse).id === "string"
+  const id = (msg as XBridgeResponse).id;
+  return (typeof id === "string" || typeof id === "number")
     && typeof (msg as XBridgeEvent).method !== "string"
     && ("result" in msg || "error" in msg);
 }
 
 function isInboundRequest(msg: XBridgeMessage): msg is XBridgeRequest {
-  return typeof (msg as XBridgeRequest).id === "string" && typeof (msg as XBridgeRequest).method === "string";
+  const id = (msg as XBridgeRequest).id;
+  return (typeof id === "string" || typeof id === "number") && typeof (msg as XBridgeRequest).method === "string";
 }
 
 /**
@@ -51,12 +60,21 @@ export class XBridgeCore {
   private readonly events: Map<string, Set<XBridgeEventListener>> = new Map();
   private readonly handlers: Map<string, XBridgeHandler> = new Map();
   private readonly adapter: IXBridgeAdapter;
+  private readonly fallbackAdapter?: IXBridgeAdapter;
   private readonly syncAdapter: ISyncAdapter | undefined;
   private messageHandlerBound = false;
+  private readonly pendingReadyCleanups: Set<() => void> = new Set();
+  private readonly pendingReadyRejects: Set<(err: Error) => void> = new Set();
+  private disposed = false;
 
-  constructor(adapter: IXBridgeAdapter, syncAdapter?: ISyncAdapter) {
+  constructor(
+    adapter: IXBridgeAdapter,
+    syncAdapter?: ISyncAdapter,
+    fallbackAdapter?: IXBridgeAdapter,
+  ) {
     this.adapter = adapter;
     this.syncAdapter = syncAdapter;
+    this.fallbackAdapter = fallbackAdapter;
     this.installInboundHandler();
   }
 
@@ -65,9 +83,14 @@ export class XBridgeCore {
     return this.adapter.name;
   }
 
-  /** The underlying async adapter. */
+  /** The primary async adapter currently in use. */
   getAdapter(): IXBridgeAdapter {
     return this.adapter;
+  }
+
+  /** The fallback async adapter, if any. */
+  getFallbackAdapter(): IXBridgeAdapter | undefined {
+    return this.fallbackAdapter;
   }
 
   /** The sync adapter, if any. */
@@ -76,15 +99,116 @@ export class XBridgeCore {
   }
 
   /**
+   * Whether any underlying async adapter is connected and available.
+   */
+  isConnected(): boolean {
+    return this.adapter.isAvailable() || (this.fallbackAdapter?.isAvailable() ?? false);
+  }
+
+  /**
+   * Wait for the bridge to become available and ready.
+   *
+   * Resolves immediately if the bridge is already available.
+   * Otherwise listens to the host's `XBridgeReady` CustomEvent, checks `window.__xbridge_ready__`,
+   * or polls at short intervals until `timeoutMs` (default 3000ms).
+   */
+  ready(timeoutMs: number = 3000): Promise<void> {
+    if (this.disposed) {
+      return Promise.reject(new XBridgeSendError("[XBridge] bridge has been disposed"));
+    }
+    if (this.isConnected()) {
+      return Promise.resolve();
+    }
+    if (
+      typeof globalThis !== "undefined" &&
+      (globalThis as unknown as { __xbridge_ready__?: boolean }).__xbridge_ready__ === true
+    ) {
+      return Promise.resolve();
+    }
+    if (timeoutMs <= 0) {
+      return Promise.reject(new XBridgeSendError("[XBridge] bridge is not ready"));
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let interval: ReturnType<typeof setInterval> | undefined;
+      let cleanedUp = false;
+
+      const cleanup = (): void => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        if (timer !== undefined) clearTimeout(timer);
+        if (interval !== undefined) clearInterval(interval);
+        if (typeof globalThis !== "undefined" && typeof globalThis.removeEventListener === "function") {
+          globalThis.removeEventListener("XBridgeReady", onReadyEvent);
+        }
+        this.pendingReadyCleanups.delete(cleanup);
+        this.pendingReadyRejects.delete(reject);
+      };
+
+      // Track for dispose() cleanup to avoid leaks when bridge is torn down
+      // while ready() is still polling.
+      this.pendingReadyCleanups.add(cleanup);
+      this.pendingReadyRejects.add(reject);
+
+      const onReadyEvent = (): void => {
+        cleanup();
+        resolve();
+      };
+
+      if (typeof globalThis !== "undefined" && typeof globalThis.addEventListener === "function") {
+        globalThis.addEventListener("XBridgeReady", onReadyEvent, { once: true });
+      }
+
+      // Short-interval polling in case event was fired before listener attached
+      interval = setInterval((): void => {
+        if (
+          this.isConnected() ||
+          (typeof globalThis !== "undefined" &&
+            (globalThis as unknown as { __xbridge_ready__?: boolean }).__xbridge_ready__ === true)
+        ) {
+          cleanup();
+          resolve();
+        }
+      }, 15);
+
+      timer = setTimeout((): void => {
+        cleanup();
+        if (this.isConnected()) {
+          resolve();
+        } else {
+          reject(
+            new XBridgeSendError(
+              `[XBridge] bridge ready handshake timed out after ${timeoutMs}ms. Host container may not have injected the bridge global.`,
+            ),
+          );
+        }
+      }, timeoutMs);
+    });
+  }
+
+  /**
    * Invoke `method` on the host and await its response.
    *
    * @param method host method name
    * @param params optional payload
-   * @param options `{ timeout?, noCallback? }`. `noCallback` resolves
+   * @param options `{ timeout?, noCallback?, fallback?, readyTimeout? }`. `noCallback` resolves
    *   immediately after `send` (fire-and-forget) — matches the WK no-callback
    *   semantics where `requestId` is `null`.
    */
-  call(method: string, params?: unknown, options?: XBridgeCallOptions): Promise<unknown> {
+  async call(method: string, params?: unknown, options?: XBridgeCallOptions): Promise<unknown> {
+    const hasFallback = options !== undefined && "fallback" in options;
+    const readyTimeout = options?.readyTimeout ?? 1500;
+    if (!this.isConnected() && readyTimeout > 0) {
+      try {
+        await this.ready(readyTimeout);
+      } catch {
+        if (hasFallback) {
+          return (options as XBridgeCallOptions).fallback;
+        }
+      }
+    }
+
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
     const noCallback = options?.noCallback === true;
 
@@ -103,21 +227,44 @@ export class XBridgeCore {
       try {
         this.adapter.send(JSON.stringify(request));
       } catch (err) {
+        // Transparent failover to fallbackAdapter if available
+        if (isSendError(err) && this.fallbackAdapter && this.fallbackAdapter.isAvailable()) {
+          try {
+            if (typeof console !== "undefined") {
+              console.warn(
+                `[XBridge] call('${method}') primary adapter (${this.adapter.name}) failed, failing over to ${this.fallbackAdapter.name}`,
+              );
+            }
+            this.fallbackAdapter.send(JSON.stringify(request));
+            return Promise.resolve(undefined);
+          } catch (fallbackErr) {
+            err = fallbackErr;
+          }
+        }
+
         if (typeof console !== "undefined") {
           console.warn(
             `[XBridge] call('${method}') failed to send:`,
             err instanceof Error ? err.message : err,
           );
         }
-        if (options?.fallback !== undefined) {
-          return Promise.resolve(options.fallback);
+        if (hasFallback) {
+          return Promise.resolve((options as XBridgeCallOptions).fallback);
         }
-        return Promise.reject(err);
+        // WebKit mitigation: attach a dummy handler before returning the
+        // rejected promise so the engine does not fire `unhandledrejection`
+        // during the microtask gap between `reject()` and the caller's
+        // `await` attaching its handler (iOS 16.x / macOS 10.15 WebKit).
+        const rejected = Promise.reject(err);
+        // Mark as handled globally — the caller's `await` will still receive
+        // the rejection via a second handler attached to the same promise.
+        rejected.catch(() => {});
+        return rejected;
       }
       return Promise.resolve(undefined);
     }
 
-    return new Promise<unknown>((resolve, reject): void => {
+    const pendingPromise = new Promise<unknown>((resolve, reject): void => {
       this.dispatcher.register(
         id as string,
         { method, resolve, reject },
@@ -126,8 +273,23 @@ export class XBridgeCore {
       try {
         this.adapter.send(JSON.stringify(request));
       } catch (err) {
-        // Send failed — clean up the pending entry before rejecting so the
-        // timer doesn't fire on a dead request.
+        // Transparent failover to fallbackAdapter if available
+        if (isSendError(err) && this.fallbackAdapter && this.fallbackAdapter.isAvailable()) {
+          try {
+            if (typeof console !== "undefined") {
+              console.warn(
+                `[XBridge] call('${method}') primary adapter (${this.adapter.name}) failed, failing over to ${this.fallbackAdapter.name}`,
+              );
+            }
+            this.fallbackAdapter.send(JSON.stringify(request));
+            // Successfully handed off to fallbackAdapter — keep the pending entry alive!
+            return;
+          } catch (fallbackErr) {
+            err = fallbackErr;
+          }
+        }
+
+        // Send failed on all available transports — clean up pending entry before resolving fallback or rejecting
         this.dispatcher.cancel(id as string);
         if (typeof console !== "undefined") {
           console.warn(
@@ -135,13 +297,23 @@ export class XBridgeCore {
             err instanceof Error ? err.message : err,
           );
         }
-        if (options?.fallback !== undefined) {
-          resolve(options.fallback);
+        if (hasFallback) {
+          resolve((options as XBridgeCallOptions).fallback);
           return;
         }
+        // WebKit: ensure a handler is attached at least once so the
+        // transient `unhandledrejection` between `reject()` and the
+        // caller's `await` scheduling does not fire as a global error.
+        // We do this by scheduling a dummy microtask handler via the
+        // dispatcher promise's own catch — the outer `pendingPromise`
+        // will still reject to the caller.
         reject(err);
       }
     });
+    // Attach a no-op catch to suppress WebKit's transient unhandledrejection
+    // (the caller's `await`/`catch` will still observe the rejection).
+    pendingPromise.catch(() => {});
+    return pendingPromise;
   }
 
   /**
@@ -234,10 +406,32 @@ export class XBridgeCore {
   /** Tear down: cancel all pending requests, drop listeners and handlers,
    * and destroy the adapter to clean up installed globals and event listeners. */
   dispose(): void {
+    this.disposed = true;
+    // Abort any pending ready() polls to avoid timer leaks. Reject them
+    // explicitly so callers awaiting `call()` (which awaits `ready()`) do not
+    // hang forever after disposal.
+    const pendingRejects = Array.from(this.pendingReadyRejects);
+    for (const cleanup of this.pendingReadyCleanups) {
+      try {
+        cleanup();
+      } catch {
+        // ignore
+      }
+    }
+    this.pendingReadyCleanups.clear();
+    for (const rej of pendingRejects) {
+      try {
+        rej(new XBridgeSendError("[XBridge] bridge has been disposed"));
+      } catch {
+        // ignore if already settled
+      }
+    }
+    this.pendingReadyRejects.clear();
     this.dispatcher.clear();
     this.events.clear();
     this.handlers.clear();
     this.adapter.destroy?.();
+    this.fallbackAdapter?.destroy?.();
   }
 
   // ---------------------------------------------------------------------
@@ -253,6 +447,11 @@ export class XBridgeCore {
     this.adapter.onMessage((raw: string): void => {
       this.handleRaw(raw);
     });
+    if (this.fallbackAdapter) {
+      this.fallbackAdapter.onMessage((raw: string): void => {
+        this.handleRaw(raw);
+      });
+    }
   }
 
   private handleRaw(raw: string): void {
@@ -357,7 +556,7 @@ export class XBridgeCore {
    * `-32601 Method not found` error is returned.
    */
   private handleInboundRequest(request: XBridgeRequest): void {
-    const id = request.id as string;
+    const id = (request.id ?? "") as string | number;
     const handler = this.handlers.get(request.method);
     if (handler === undefined) {
       this.sendInboundResponse(id, undefined, {
@@ -393,7 +592,7 @@ export class XBridgeCore {
 
   /** Serialize and send a JSON-RPC response back to the Native host. */
   private sendInboundResponse(
-    id: string,
+    id: string | number,
     result: unknown,
     error: XBridgeError | undefined,
   ): void {
@@ -404,6 +603,14 @@ export class XBridgeCore {
     try {
       this.adapter.send(JSON.stringify(response));
     } catch (err) {
+      if (isSendError(err) && this.fallbackAdapter && this.fallbackAdapter.isAvailable()) {
+        try {
+          this.fallbackAdapter.send(JSON.stringify(response));
+          return;
+        } catch {
+          // ignore
+        }
+      }
       if (typeof console !== "undefined") {
         console.warn("[XBridge] failed to send inbound response:", err);
       }

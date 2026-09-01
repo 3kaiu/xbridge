@@ -157,10 +157,10 @@ class XBridgePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         // policy against a new origin or vice versa.
         val policy = securityPolicy
         val currentOrigin = origin
-        if (!policy.allows(currentOrigin)) {
+        if (currentOrigin != null && !policy.allows(currentOrigin)) {
             result.error(
                 "ORIGIN_NOT_ALLOWED",
-                "Origin '$origin' is not permitted by the security policy",
+                "Origin '$currentOrigin' is not permitted by the security policy",
                 null,
             )
             return

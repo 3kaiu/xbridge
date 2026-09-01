@@ -47,6 +47,12 @@ export interface IXBridgeAdapter {
    * idempotent.
    */
   destroy?(): void;
+
+  /**
+   * Reset any internal circuit-breaker or error state back to healthy.
+   * Optional — adapters that maintain no internal error state may omit it.
+   */
+  reset?(): void;
 }
 
 /**

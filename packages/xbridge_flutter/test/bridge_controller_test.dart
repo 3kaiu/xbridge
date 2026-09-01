@@ -166,4 +166,23 @@ void main() {
     expect(capturedEvent!.type, equals(BridgeSecurityEventType.rateLimitExceeded));
     expect(capturedEvent!.origin, equals('https://app.example.com'));
   });
+
+  test('origin captured on page start immediately enables security policy validation', () async {
+    controller.setSecurityPolicy(
+      XBridgeSecurityPolicy.allowlist({'https://secure.example.com'}),
+    );
+
+    // Simulate onPageStarted updating origin before onPageFinished
+    controller.setCurrentOrigin('https://secure.example.com');
+
+    // H5 sends call during initial page load
+    await controller.handleRawMessage(jsonEncode({
+      'id': 'early_call',
+      'method': 'getAppInfo',
+      'params': {},
+    }));
+
+    expect(transport.resolvedIds, contains('early_call'));
+    expect(transport.results['early_call'], equals({'version': '1.0.0'}));
+  });
 }

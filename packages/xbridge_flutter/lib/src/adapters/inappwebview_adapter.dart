@@ -39,20 +39,34 @@ class InAppWebViewBridgeAdapter {
 
     controller.evaluateJavascript(source: BridgeScriptBuilder.unifiedBootstrap).catchError((_) => '');
 
-    // Set initial origin. Navigation updates MUST be wired by the caller
-    // via onLoadStop() — see the attach() doc above.
+    // Set initial origin. Navigation updates can be wired via onLoadStart / onLoadStop.
     controller.getUrl().then((url) {
       bridge.setCurrentOrigin(_extractOrigin(url?.toString()));
     }).catchError((_) {});
   }
 
-  /// Update the current origin after navigation. Call this from your
-  /// `InAppWebView` widget's `onLoadStop` and `onUpdateVisitedHistory`
-  /// callbacks to keep the security policy origin in sync.
-  void onLoadStop(InAppWebViewController controller, BridgeController bridge) {
-    controller.getUrl().then((url) {
-      bridge.setCurrentOrigin(_extractOrigin(url?.toString()));
-    }).catchError((_) {});
+  /// Update the origin and re-inject protocol bootstrap at the start of navigation.
+  void onLoadStart(InAppWebViewController controller, BridgeController bridge, {WebUri? url}) {
+    if (url != null) {
+      bridge.setCurrentOrigin(_extractOrigin(url.toString()));
+    } else {
+      controller.getUrl().then((u) {
+        bridge.setCurrentOrigin(_extractOrigin(u?.toString()));
+      }).catchError((_) {});
+    }
+    controller.evaluateJavascript(source: BridgeScriptBuilder.unifiedBootstrap).catchError((_) => '');
+  }
+
+  /// Update the current origin and ensure bootstrap is active after navigation.
+  void onLoadStop(InAppWebViewController controller, BridgeController bridge, {WebUri? url}) {
+    if (url != null) {
+      bridge.setCurrentOrigin(_extractOrigin(url.toString()));
+    } else {
+      controller.getUrl().then((u) {
+        bridge.setCurrentOrigin(_extractOrigin(u?.toString()));
+      }).catchError((_) {});
+    }
+    controller.evaluateJavascript(source: BridgeScriptBuilder.unifiedBootstrap).catchError((_) => '');
   }
 
   void detach(

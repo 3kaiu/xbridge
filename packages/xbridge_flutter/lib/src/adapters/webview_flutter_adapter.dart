@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:xbridge_protocol/xbridge_protocol.dart';
 
@@ -10,10 +9,16 @@ class WebViewFlutterBridgeAdapter {
   WebViewController? _attachedController;
   BridgeController? _attachedBridge;
 
+  /// Attach this adapter to [controller] and [bridge].
+  ///
+  /// Optionally pass [hostNavigationDelegate] so that existing app-level
+  /// navigation callbacks (such as page progress, resource errors, or URL routing)
+  /// are preserved and invoked alongside bridge lifecycle events.
   void attach(
     WebViewController controller,
     BridgeController bridge, {
     String channelName = 'XBridge',
+    NavigationDelegate? hostNavigationDelegate,
   }) {
     bridge.setTransport(_WebViewFlutterTransport(controller));
     controller.addJavaScriptChannel(
@@ -23,23 +28,52 @@ class WebViewFlutterBridgeAdapter {
       },
     );
 
+    // Install composite NavigationDelegate that hooks lifecycle events
+    // without clobbering host app callbacks.
     controller.setNavigationDelegate(
-      NavigationDelegate(
-        onPageFinished: (_) async {
-          final url = await controller.currentUrl();
-          bridge.setCurrentOrigin(_extractOrigin(url));
-        },
+      createNavigationDelegate(
+        controller: controller,
+        bridge: bridge,
+        hostDelegate: hostNavigationDelegate,
       ),
     );
 
-    // Bootstrap standard JS environment (window.XBridge, window.__XBridge__)
-    controller.runJavaScript(BridgeScriptBuilder.unifiedBootstrap).catchError((error) {
-      debugPrint('[XBridge] WARNING: failed to inject bridge bootstrap JS: $error. '
-          'Bridge responses will not reach H5 until the page is reloaded.');
-    });
+    // 1. Initial bootstrap injection (for already loaded or current frame)
+    controller.runJavaScript(BridgeScriptBuilder.unifiedBootstrap).catchError((_) {});
+
+    // 2. Initial origin capture
+    controller.currentUrl().then((url) {
+      if (url != null && url.isNotEmpty) {
+        bridge.setCurrentOrigin(_extractOrigin(url));
+      }
+    }).catchError((_) {});
 
     _attachedController = controller;
     _attachedBridge = bridge;
+  }
+
+  /// Creates a [NavigationDelegate] combining bridge lifecycle management
+  /// (bootstrap injection, origin tracking) with an optional [hostDelegate].
+  NavigationDelegate createNavigationDelegate({
+    required WebViewController controller,
+    required BridgeController bridge,
+    NavigationDelegate? hostDelegate,
+  }) {
+    return NavigationDelegate(
+      onPageStarted: (String url) {
+        bridge.setCurrentOrigin(_extractOrigin(url));
+        controller.runJavaScript(BridgeScriptBuilder.unifiedBootstrap).catchError((_) {});
+        hostDelegate?.onPageStarted?.call(url);
+      },
+      onPageFinished: (String url) async {
+        bridge.setCurrentOrigin(_extractOrigin(url));
+        controller.runJavaScript(BridgeScriptBuilder.unifiedBootstrap).catchError((_) {});
+        hostDelegate?.onPageFinished?.call(url);
+      },
+      onProgress: hostDelegate?.onProgress,
+      onWebResourceError: hostDelegate?.onWebResourceError,
+      onNavigationRequest: hostDelegate?.onNavigationRequest,
+    );
   }
 
   void detach({String channelName = 'XBridge'}) {

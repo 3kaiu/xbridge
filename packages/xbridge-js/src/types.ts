@@ -32,7 +32,7 @@ export interface XBridgeRequest {
  */
 export interface XBridgeResponse {
   jsonrpc: typeof XBRIDGE_PROTOCOL_VERSION;
-  id: string;
+  id: string | number;
   result?: unknown;
   error?: XBridgeError;
 }
@@ -75,10 +75,21 @@ export interface XBridgeCallOptions {
   /**
    * Graceful fallback value resolved when the bridge transport fails to send
    * (e.g. running in standard Safari outside native container).
-   * When specified, transport errors will resolve to this fallback value
-   * instead of rejecting the Promise.
+   * When the `fallback` property is **present** (even as `undefined`), transport
+   * errors will `resolve(fallback)` instead of `reject`. This allows
+   * `call('getSafeArea', {}, {fallback: undefined})` to suppress the
+   * WebKit transient `unhandledrejection` gap by resolving rather than
+   * rejecting. Absence of the property means strict `reject` on failure.
+   *
+   * Detect presence via `"fallback" in options`, not `fallback !== undefined`.
    */
   fallback?: unknown;
+  /**
+   * Maximum milliseconds to wait for the bridge transport to become ready
+   * before sending. Defaults to 1500ms to absorb WebView injection races.
+   * Set to 0 to disable ready waiting and fail fast.
+   */
+  readyTimeout?: number;
 }
 
 /**

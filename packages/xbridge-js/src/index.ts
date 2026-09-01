@@ -54,43 +54,105 @@ export type {
 export interface XBridgeOptions {
   /** Force a specific async adapter (skip env sniffing). */
   adapter?: IXBridgeAdapter;
+  /**
+   * Secondary / fallback async adapter.
+   * If the primary adapter's send() fails with a transport error (e.g. XBridgeSendError),
+   * XBridgeCore will automatically and transparently failover to this adapter.
+   */
+  fallbackAdapter?: IXBridgeAdapter;
   /** Force a specific sync adapter (skip env sniffing). */
   syncAdapter?: ISyncAdapter;
 }
 
 /**
- * No-op adapter used when no host bridge is detected. Every `send` throws
- * immediately so the caller gets a clear "no transport" error instead of
- * hanging for the full dispatcher timeout (30s by default).
+ * No-op adapter used when no host bridge is detected at construction time.
+ * It is **live-aware**: if a bridge is injected late (after this instance
+ * was created), `isAvailable()` dynamically reflects the new global and
+ * `send()`/`onMessage()` transparently delegate to an internal
+ * StandardAdapter. This preserves backward compatibility for singleton
+ * bridges created before native injection, while still allowing strict
+ * `pickAdapter` semantics (Noop vs Standard) for correct environment
+ * classification and to avoid `InvalidAccessError` in non-app containers.
  */
 class NoopAdapter implements IXBridgeAdapter {
   readonly name = "Noop";
+  private _delegate: StandardAdapter | null = null;
+  private _handler: ((raw: string) => void) | null = null;
+
+  private get delegate(): StandardAdapter {
+    if (this._delegate === null) {
+      this._delegate = new StandardAdapter();
+      if (this._handler !== null) {
+        this._delegate.onMessage(this._handler);
+      }
+    }
+    return this._delegate;
+  }
 
   isAvailable(): boolean {
-    return false;
+    // Delegate's isAvailable probes the same live globals (including circuit
+    // breaker). If delegate not yet created, probe directly via shared helper
+    // to avoid instantiating StandardAdapter unnecessarily.
+    if (this._delegate !== null) {
+      return this._delegate.isAvailable();
+    }
+    return hasLiveBridge(sniffWindow());
   }
 
   send(_message: string): void {
-    throw new XBridgeSendError(
-      "[XBridge] no bridge environment detected; call() cannot deliver messages. " +
-        "Ensure the host (Flutter/native) has injected the bridge global before calling.",
-    );
+    // If no live bridge yet, throw the classic Noop error (not Standard's
+    // "postMessage not available" which is considered transient).
+    if (!this.isAvailable()) {
+      throw new XBridgeSendError(
+        "[XBridge] no bridge environment detected; call() cannot deliver messages. " +
+          "Ensure the host (Flutter/native) has injected the bridge global before calling.",
+      );
+    }
+    // Live bridge exists — delegate to StandardAdapter which handles
+    // circuit breaker, diagnostic snapshot, and inbound wiring.
+    // Ensure inbound wiring is installed before send (mirrors Standard).
+    return this.delegate.send(_message);
   }
 
-  onMessage(_handler: (raw: string) => void): void {
-    // Noop: never receives inbound messages.
+  onMessage(handler: (raw: string) => void): void {
+    this._handler = handler;
+    // Eagerly wire delegate so that Native→H5 inbound requests/events that
+    // arrive before the first H5→Native `send()` are not lost (cold-start
+    // push scenario). The delegate's `ensureOverridesInstalled` is idempotent
+    // and will create the `window.__XBridge__` placeholder if needed.
+    this.delegate.onMessage(handler);
+  }
+
+  // For XBridgeCore teardown compatibility
+  destroy(): void {
+    this._delegate?.destroy();
+    this._delegate = null;
+    this._handler = null;
   }
 }
 
 interface WindowForSniff {
   XBridge?: { postMessage?: unknown };
+  flutter_inappwebview?: { callHandler?: unknown };
   dsbridge?: { call?: unknown };
+  __xbridge_ready__?: boolean;
 }
 
 function sniffWindow(): WindowForSniff | undefined {
   return typeof globalThis !== "undefined"
     ? (globalThis as unknown as WindowForSniff)
     : undefined;
+}
+
+/** Shared live-bridge probe — single source of truth for environment sniffing. */
+function hasLiveBridge(w: WindowForSniff | undefined): boolean {
+  if (w === undefined) return false;
+  const inapp = (w as unknown as { flutter_inappwebview?: { callHandler?: unknown } }).flutter_inappwebview;
+  return (
+    typeof w.XBridge?.postMessage === "function" ||
+    typeof inapp?.callHandler === "function" ||
+    w.__xbridge_ready__ === true
+  );
 }
 
 /** Cached environment detection booleans — never store adapter instances. */
@@ -116,40 +178,38 @@ setSniffCacheInvalidator((): void => {
  * Delegates to `StandardAdapter.resetSniffCache()`.
  */
 export function resetSniffCache(): void {
+  sniffCache = null;
   StandardAdapter.resetSniffCache();
 }
 
 function detectEnv(): SniffCache {
-  if (sniffCache !== null) {
+  // Only return cached detection if a bridge was actually found.
+  // Never lock into a negative detection permanently because WebView injections
+  // can complete asynchronously after initial bundle execution.
+  if (sniffCache !== null && (sniffCache.hasStandard || sniffCache.hasNativeSync)) {
     return sniffCache;
   }
   const w = sniffWindow();
-  const hasStandard =
-    w !== undefined && typeof w.XBridge?.postMessage === "function";
+  const hasStandard = hasLiveBridge(w);
   const hasNativeSync = w !== undefined && typeof w.dsbridge?.call === "function";
 
-  let warned = false;
-  if (hasNativeSync && !hasStandard) {
-    warned = true;
-    if (typeof console !== "undefined") {
-      console.warn(
-        "[XBridge] only native sync bridge detected; callSync is available but async call() has no transport.",
-      );
-    }
-  } else if (!hasStandard) {
-    warned = true;
-    if (typeof console !== "undefined") {
-      console.warn("[XBridge] no bridge environment detected.");
-    }
-  }
-
+  const warned = false;
   sniffCache = { hasStandard, hasNativeSync, warned };
   return sniffCache;
 }
 
 /**
- * Construct a fresh async adapter from cached env detection. Returns a NoopAdapter
+ * Construct an async adapter from cached env detection. Returns a NoopAdapter
  * when no transport is detected.
+ *
+ * NOTE: `typeof globalThis !== "undefined"` is intentionally NOT used as a
+ * fallback — it is tautologically true in every JS runtime (browser, Node,
+ * WebView) and would make NoopAdapter dead code, misclassifying every
+ * non-app container (Safari, Apple Mail, XiaoeEmbed) as `xbridge` and
+ * triggering `InvalidAccessError` when `postMessage` is invoked without
+ * native MessageHandler permission. Late-injected bridges are handled via
+ * {@link XBridgeCore.ready} polling and live `isAvailable()` checks, not by
+ * eagerly defaulting to StandardAdapter.
  */
 function pickAdapter(env: SniffCache): IXBridgeAdapter {
   if (env.hasStandard) {
@@ -176,22 +236,30 @@ function pickSyncAdapter(env: SniffCache): ISyncAdapter | undefined {
 export class XBridge {
   private readonly core: XBridgeCore;
   private readonly _adapter: IXBridgeAdapter;
+  private readonly _fallbackAdapter: IXBridgeAdapter | undefined;
   private readonly _syncAdapter: ISyncAdapter | undefined;
 
   constructor(options?: XBridgeOptions) {
     const env = detectEnv();
-    if (options !== undefined && (options.adapter !== undefined || options.syncAdapter !== undefined)) {
+    if (
+      options !== undefined &&
+      (options.adapter !== undefined ||
+        options.syncAdapter !== undefined ||
+        options.fallbackAdapter !== undefined)
+    ) {
       // Manual override: use the explicitly provided adapter(s). If only the
       // async adapter is overridden, re-detect the sync adapter fresh (don't
       // reuse a cached sync adapter instance which may be stale).
       this._adapter = options.adapter ?? pickAdapter(env);
+      this._fallbackAdapter = options.fallbackAdapter;
       this._syncAdapter =
         options.syncAdapter !== undefined ? options.syncAdapter : pickSyncAdapter(env);
     } else {
       this._adapter = pickAdapter(env);
+      this._fallbackAdapter = undefined;
       this._syncAdapter = pickSyncAdapter(env);
     }
-    this.core = new XBridgeCore(this._adapter, this._syncAdapter);
+    this.core = new XBridgeCore(this._adapter, this._syncAdapter, this._fallbackAdapter);
   }
 
   /** The async adapter currently in use. */
@@ -199,9 +267,24 @@ export class XBridge {
     return this._adapter;
   }
 
+  /** The fallback adapter, if any. */
+  getFallbackAdapter(): IXBridgeAdapter | undefined {
+    return this._fallbackAdapter;
+  }
+
   /** The sync adapter, if any. */
   getSyncAdapter(): ISyncAdapter | undefined {
     return this._syncAdapter;
+  }
+
+  /**
+   * Wait for the bridge transport to become available and ready.
+   *
+   * @param timeoutMs max milliseconds to wait (default 3000ms).
+   * @returns Promise that resolves when the bridge is ready.
+   */
+  ready(timeoutMs?: number): Promise<void> {
+    return this.core.ready(timeoutMs);
   }
 
   /** Async RPC. @see {@link XBridgeCore.call}. */
@@ -244,6 +327,6 @@ export class XBridge {
    * ```
    */
   isConnected(): boolean {
-    return this._adapter.isAvailable();
+    return this._adapter.isAvailable() || (this._fallbackAdapter?.isAvailable() ?? false);
   }
 }
