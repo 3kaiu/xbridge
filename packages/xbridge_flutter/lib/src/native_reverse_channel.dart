@@ -23,6 +23,19 @@ class NativeReverseChannel {
 
   static const String channelName = 'xbridge/native_reverse';
 
+  /// Fixed reverse-channel method that Native uses to broadcast an event to H5.
+  ///
+  /// The real event name is carried in `arguments["method"]` (and `params` in
+  /// `arguments["params"]`) — NOT encoded into the method-name prefix — so a
+  /// native business method can never collide with the event namespace.
+  static const String eventMethod = 'pushEvent';
+
+  /// Legacy event marker produced by pre-`pushEvent` native binaries
+  /// (`invokeMethod("__event__:$name", params)`). Kept as a backward-compat
+  /// fallback so an older native binary keeps delivering events to H5 after a
+  /// Flutter-side upgrade.
+  static const String legacyEventPrefix = '__event__:';
+
   final MethodChannel _channel = const MethodChannel(channelName);
   BridgeController? _boundController;
 
@@ -62,9 +75,24 @@ class NativeReverseChannel {
     final method = call.method;
     final params = call.arguments;
 
-    // Special event routing
-    if (method.startsWith('__event__:')) {
-      final eventName = method.substring('__event__:'.length);
+    // Structural event delivery: a fixed method name (`pushEvent`) whose
+    // arguments carry the real event name. Business method names can never be
+    // mistaken for events because the marker lives in the method name itself.
+    if (method == eventMethod) {
+      if (params is Map) {
+        final eventName = params['method'];
+        await controller.dispatchEvent(
+          BridgeEvent(method: '$eventName', params: params['params']),
+        );
+      }
+      return null;
+    }
+
+    // Legacy event marker (`__event__:$name`) from older native binaries.
+    if (method.startsWith(legacyEventPrefix)) {
+      debugPrint('[XBridge] NativeReverseChannel: native used the legacy '
+          '"$legacyEventPrefix" prefix — upgrade native to use "$eventMethod".');
+      final eventName = method.substring(legacyEventPrefix.length);
       await controller.dispatchEvent(BridgeEvent(method: eventName, params: params));
       return null;
     }

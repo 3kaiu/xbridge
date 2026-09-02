@@ -25,6 +25,11 @@ class FallbackChannel {
   /// this channel and forward `method`/`params` to their legacy bridge plugin.
   static const String channelName = 'xbridge/native_fallback';
 
+  /// Default timeout for a single native fallback invoke. Mirrors the H5-side
+  /// default request timeout so a hung native handler surfaces as a
+  /// `BRIDGE_TIMEOUT` error instead of hanging the (already awaiting) caller.
+  static const Duration defaultTimeout = Duration(seconds: 30);
+
   final MethodChannel _channel = const MethodChannel(channelName);
 
   /// Invokes [method] with [params] on the native fallback handler.
@@ -32,11 +37,24 @@ class FallbackChannel {
   /// Returns the native result. Throws [BridgeError] on failure so the caller
   /// can send a proper JSON-RPC error response to H5 — never masks errors as
   /// `null` success. Retries once after a short delay to handle transient
-  /// failures during native plugin initialization.
-  Future<dynamic> invoke(String method, dynamic params) async {
+  /// failures during native plugin initialization, and enforces [timeout] on
+  /// each attempt so a native handler that never responds cannot hang the
+  /// bridge indefinitely (PRD §3.4).
+  Future<dynamic> invoke(
+    String method,
+    dynamic params, {
+    Duration timeout = defaultTimeout,
+  }) async {
     for (var attempt = 0; attempt < 2; attempt++) {
       try {
-        return await _channel.invokeMethod(method, params);
+        return await _channel
+            .invokeMethod(method, params)
+            .timeout(timeout, onTimeout: () {
+          throw BridgeError(
+            code: BridgeErrorCode.timeout,
+            message: 'Native handler for "$method" did not respond within ${timeout.inSeconds}s',
+          );
+        });
       } on MissingPluginException catch (_) {
         if (attempt == 0) {
           // Native plugin might not be ready yet — wait briefly and retry.
@@ -56,6 +74,12 @@ class FallbackChannel {
           code: e.code,
           message: e.message ?? 'Native error',
           detail: e.details,
+        );
+      } on TimeoutException catch (e) {
+        throw BridgeError(
+          code: BridgeErrorCode.timeout,
+          message: 'Native handler for "$method" did not respond in time',
+          detail: e.message,
         );
       }
     }

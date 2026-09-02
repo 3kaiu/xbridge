@@ -233,12 +233,63 @@ class BridgeController {
         message: 'Failed to parse bridge request: $error',
       );
       debugPrint('[XBridge] Failed to parse bridge request: $error\n$stackTrace');
+      // If the malformed message still carries an `id`, reject it explicitly so
+      // an H5 caller awaiting a response does not hang until its own timeout.
+      // Without a resolvable id (e.g. non-object payload) this is impossible,
+      // and the message is dropped.
+      final rawId = decoded['id'];
+      final malformedId = rawId == null ? null : '$rawId'.trim();
+      if (malformedId != null && malformedId.isNotEmpty) {
+        try {
+          await transport.reject(
+            malformedId,
+            BridgeError(
+              code: BridgeErrorCode.invalidRequest,
+              message:
+                  'Bridge request is malformed and could not be processed: $error',
+            ),
+          );
+        } catch (e) {
+          debugPrint('[XBridge] Failed to send invalid-request reject: $e');
+        }
+      }
       return;
     }
 
     final isFireAndForget = request.id == null || request.id!.isEmpty;
 
     try {
+      // Guard 0: reject reserved native-control method names coming from H5.
+      // Native plugins route `xbridge.*`-prefixed methods to their *control*
+      // handler (security-policy / WS management) and skip the business
+      // policy gate there. If an H5 request names e.g. `xbridge.setSecurityPolicy`
+      // and it is not registered here, a naive forward to FallbackChannel
+      // would reach the native control handler and bypass defense-in-depth.
+      // Fail closed: no H5-originated method may use the reserved prefix.
+      if (_isReservedControlMethod(request.method)) {
+        telemetry.record(
+          type: BridgeSecurityEventType.methodForbidden,
+          origin: _currentOrigin,
+          method: request.method,
+          message: 'H5 attempted reserved native-control method "${request.method}"',
+        );
+        if (!isFireAndForget) {
+          try {
+            await transport.reject(
+              request.id!,
+              BridgeError(
+                code: BridgeErrorCode.methodForbidden,
+                message:
+                    'Bridge method "${request.method}" is reserved for native control and cannot be invoked from H5',
+              ),
+            );
+          } catch (e) {
+            debugPrint('[XBridge] Failed to send reserved-method reject: $e');
+          }
+        }
+        return;
+      }
+
       if (!_isAllowed(request)) {
         telemetry.record(
           type: BridgeSecurityEventType.methodForbidden,
@@ -342,6 +393,15 @@ class BridgeController {
     // 与 Android/iOS 原生判定对齐（方案 A1）。
     return policy.isMethodAllowed(origin, request.method, isMainFrame: true);
   }
+
+  /// Reserved prefix for native-control methods, matching the native plugins'
+  /// control dispatch (`xbridge.` in Kotlin/Swift). H5 may never invoke these.
+  static const String _reservedControlPrefix = 'xbridge.';
+
+  /// Returns true when [method] belongs to the native control namespace that
+  /// must not be reachable from H5.
+  bool _isReservedControlMethod(String method) =>
+      method.startsWith(_reservedControlPrefix);
 
   /// Explicitly sets the current page origin, used by the security policy.
   void setCurrentOrigin(String? origin) {

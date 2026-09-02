@@ -41,6 +41,14 @@ class XBridgePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         /** Prefix for XBridge-internal control calls (never forwarded). */
         private const val CONTROL_PREFIX = "xbridge."
 
+        /**
+         * Fixed reverse-channel method that Native uses to broadcast an event
+         * to H5. The real event name lives in `arguments["method"]` (and `params`
+         * in `arguments["params"]`), NOT in the method-name prefix, so no
+         * business method name can collide with the event namespace.
+         */
+        const val EVENT_METHOD = "pushEvent"
+
         private const val CTRL_SETUP_WS = "xbridge.setupLocalWebSocket"
         private const val CTRL_TEARDOWN_WS = "xbridge.teardownLocalWebSocket"
         private const val CTRL_SET_POLICY = "xbridge.setSecurityPolicy"
@@ -109,6 +117,10 @@ class XBridgePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     /**
      * Broadcast an event from Native to H5.
+     *
+     * Delivered as a fixed method name (`pushEvent`) with the real event name
+     * carried in the arguments map — not encoded into the method-name prefix —
+     * so a business method can never collide with the event-marker namespace.
      */
     fun pushEvent(method: String, params: Any?) {
         val rc = reverseChannel
@@ -116,7 +128,7 @@ class XBridgePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             Log.w(TAG, "pushEvent('$method') dropped: reverse channel is null (not attached to engine)")
             return
         }
-        rc.invokeMethod("__event__:$method", params)
+        rc.invokeMethod(EVENT_METHOD, mapOf("method" to method, "params" to params))
     }
 
     // ── FlutterPlugin lifecycle ────────────────────────────────────────────

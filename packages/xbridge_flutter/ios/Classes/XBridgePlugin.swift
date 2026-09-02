@@ -35,6 +35,12 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
     /// The MethodChannel name for Native → Flutter/H5 reverse calls.
     public static let reverseChannelName = "xbridge/native_reverse"
 
+    /// Fixed reverse-channel method that Native uses to broadcast an event to
+    /// H5. The real event name lives in `arguments["method"]` (and `params` in
+    /// `arguments["params"]`), NOT in the method-name prefix, so no business
+    /// method name can collide with the event namespace.
+    public static let reverseEventMethod = "pushEvent"
+
     // MARK: - State
 
     /// The app-supplied delegate that forwards to the existing bridge handler.
@@ -62,8 +68,16 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
     }
 
     /// Broadcast an event from Native to H5.
+    ///
+    /// Delivered as a fixed method name (`pushEvent`) with the real event name
+    /// carried in the arguments map — not encoded into the method-name prefix —
+    /// so a business method can never collide with the event-marker namespace.
     public func pushEvent(method: String, params: Any?) {
-        reverseChannel?.invokeMethod("__event__:\(method)", arguments: params)
+        var args: [String: Any] = ["method": method]
+        if let params = params {
+            args["params"] = params
+        }
+        reverseChannel?.invokeMethod(Self.reverseEventMethod, arguments: args)
     }
 
     // MARK: - FlutterPlugin

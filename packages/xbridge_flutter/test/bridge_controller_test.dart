@@ -174,6 +174,54 @@ void main() {
     expect(capturedEvent!.origin, equals('https://app.example.com'));
   });
 
+  test('rejects reserved native-control method names from H5 even with an authorized origin', () async {
+    // Origin is fully authorized (allowAll) — yet `xbridge.*` control methods
+    // must still be rejected so H5 cannot reach the native control handler.
+    controller.setSecurityPolicy(XBridgeSecurityPolicy.allowAll());
+    controller.setCurrentOrigin('https://app.example.com');
+
+    BridgeSecurityEvent? capturedEvent;
+    controller.onSecurityEvent = (event) {
+      capturedEvent = event;
+    };
+
+    await controller.handleRawMessage(jsonEncode({
+      'id': 'ctrl_1',
+      'method': 'xbridge.setSecurityPolicy',
+      'params': {},
+    }));
+    await controller.handleRawMessage(jsonEncode({
+      'id': 'ctrl_2',
+      'method': 'xbridge.setupLocalWebSocket',
+      'params': {'port': 0},
+    }));
+
+    expect(transport.resolvedIds, isEmpty);
+    expect(transport.rejectedIds, containsAll(['ctrl_1', 'ctrl_2']));
+    expect(transport.errors['ctrl_1']?.code, equals('BRIDGE_METHOD_FORBIDDEN'));
+    expect(transport.errors['ctrl_2']?.code, equals('BRIDGE_METHOD_FORBIDDEN'));
+
+    // Wait for telemetry coalesce window.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    expect(capturedEvent, isNotNull);
+    expect(capturedEvent!.type, equals(BridgeSecurityEventType.methodForbidden));
+  });
+
+  test('rejects a structurally-invalid request that carries an id (no stranded promise)', () async {
+    controller.setSecurityPolicy(XBridgeSecurityPolicy.allowAll());
+    controller.setCurrentOrigin('https://app.example.com');
+
+    // "method" is a number, not a string → BridgeRequest.fromMap throws.
+    await controller.handleRawMessage(jsonEncode({
+      'id': 'bad_req',
+      'method': 42,
+      'params': {},
+    }));
+
+    expect(transport.rejectedIds, contains('bad_req'));
+    expect(transport.errors['bad_req']?.code, equals('BRIDGE_INVALID_REQUEST'));
+  });
+
   test('origin captured on page start immediately enables security policy validation', () async {
     controller.setSecurityPolicy(
       XBridgeSecurityPolicy.capabilities(

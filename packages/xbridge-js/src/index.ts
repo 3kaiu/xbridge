@@ -8,13 +8,14 @@
  *
  * Sniff order (first match wins):
  *   1. `window.XBridge.postMessage` → StandardAdapter
- *   2. `window.dsbridge.call`        → NativeSyncAdapter (sync only, async warns)
- *   3. none                           → NoopAdapter (warns "no bridge environment")
+ *   2. `window.XBridgeSync.callSync` → NativeSyncAdapter (sync only, async warns)
+ *   3. `window.dsbridge.call`        → NativeSyncAdapter (sync only, async warns)
+ *   4. none                           → NoopAdapter (warns "no bridge environment")
  *
- * When `window.dsbridge` is detected but no async adapter is, it is installed
- * as the sync adapter only — `callSync` works, `call` warns. This matches the
- * brownfield reality that a pure native-sync shell has sync semantics and no
- * JSON-RPC async channel.
+ * When a native sync bridge (`XBridgeSync` or `dsbridge`) is detected but no
+ * async adapter is, it is installed as the sync adapter only — `callSync`
+ * works, `call` warns. This matches the brownfield reality that a pure
+ * native-sync shell has sync semantics and no JSON-RPC async channel.
  */
 
 import type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
@@ -135,6 +136,7 @@ interface WindowForSniff {
   XBridge?: { postMessage?: unknown };
   flutter_inappwebview?: { callHandler?: unknown };
   dsbridge?: { call?: unknown };
+  XBridgeSync?: { callSync?: unknown };
   __xbridge_ready__?: boolean;
 }
 
@@ -191,7 +193,10 @@ function detectEnv(): SniffCache {
   }
   const w = sniffWindow();
   const hasStandard = hasLiveBridge(w);
-  const hasNativeSync = w !== undefined && typeof w.dsbridge?.call === "function";
+  const hasNativeSync =
+    w !== undefined &&
+    (typeof w.dsbridge?.call === "function" ||
+      typeof w.XBridgeSync?.callSync === "function");
 
   const warned = false;
   sniffCache = { hasStandard, hasNativeSync, warned };
