@@ -49,7 +49,7 @@ android {
 
 dependencies {
     // Flutter embedding — provided by the host app's Flutter Gradle tooling.
-    compileOnly 'io.flutter:flutter_embedding_debug:1.0.0-dbed2c7f7ee5fe5a437f5c5418e5a25d0611d7a8'
-    compileOnly 'io.flutter:flutter_embedding_release:1.0.0-dbed2c7f7ee5fe5a437f5c5418e5a25d0611d7a8'
+    compileOnly 'io.flutter:flutter_embedding_debug:1.0.0-05e2ac5c23a681fa22c811ac585ce77f1f358325'
+    compileOnly 'io.flutter:flutter_embedding_release:1.0.0-05e2ac5c23a681fa22c811ac585ce77f1f358325'
     compileOnly 'androidx.annotation:annotation:1.7.1'
 }
