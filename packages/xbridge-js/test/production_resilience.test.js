@@ -210,6 +210,39 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     bridge.dispose();
   });
 
+  test("7b. Object-literal inbound: host injects {..} (not JSON string) via __XBridgeInbound__, must route correctly", async () => {
+    // Dart 宿主注入的是对象字面量（非 JSON 字符串）。内核必须规整对象
+    // 后再解析，否则对象被 ToString 成 "[object Object]" 而静默丢弃。
+    let sentBack;
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        sentBack = JSON.parse(raw);
+      },
+    };
+
+    const bridge = new XBridge();
+    bridge.registerHandler("confirmAction", (params) => {
+      return { confirmed: true, target: params.item };
+    });
+
+    // 以对象字面量（而非字符串）调用 __XBridgeInbound__
+    globalThis.__XBridgeInbound__({
+      jsonrpc: "2.0",
+      id: "obj-inbound-1",
+      method: "confirmAction",
+      params: { item: "order_2" },
+    });
+
+    await new Promise((r) => setTimeout(r, 15));
+    assert.deepEqual(sentBack, {
+      jsonrpc: "2.0",
+      id: "obj-inbound-1",
+      result: { confirmed: true, target: "order_2" },
+    });
+
+    bridge.dispose();
+  });
+
   test("8. Fallback adapter failover when primary adapter send() fails", async () => {
     const primaryAdapter = {
       name: "FailingPrimary",
@@ -275,5 +308,53 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     );
     assert.deepEqual(res, { top: 0, bottom: 0 });
     bridge.dispose();
+  });
+
+  test("11. Void method: host resolve(id) WITHOUT result must settle instead of hanging to timeout", async () => {
+    // F1 regression: `resolve(id)` with no `result` used to serialize a payload
+    // missing the `result` key, so `isResponse` rejected the message and the
+    // pending call hung until the 30s (here overridden) timeout.
+    let resolveRaw;
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        const req = JSON.parse(raw);
+        resolveRaw = raw;
+        // Host resolves a void method without returning any value.
+        setTimeout(() => globalThis.__XBridge__.resolve(req.id), 2);
+      },
+    };
+    const bridge = new XBridge();
+    const t0 = Date.now();
+    const res = await bridge.call("voidMethod", {}, { timeout: 1000 });
+    const elapsed = Date.now() - t0;
+    // Must settle promptly (not after the 1000ms timeout).
+    assert.ok(elapsed < 900, `void call took ${elapsed}ms (should resolve quickly)`);
+    assert.equal(res, null);
+    assert.ok((JSON.parse(resolveRaw)).method === "voidMethod");
+    bridge.dispose();
+  });
+
+  test("12. dispose() rejecting a pending call must NOT fire unhandledrejection when caller awaits later", async () => {
+    // F2 regression: the no-op catch must attach to the promise the caller
+    // actually holds; otherwise an async (delayed) await fires a global
+    // unhandledrejection.
+    const fired = [];
+    const onUnhandled = (reason) => { fired.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      globalThis.XBridge = {
+        postMessage: () => { /* host never responds, call stays pending */ },
+      };
+      const bridge = new XBridge();
+      const p = bridge.call("neverResolves", {}, { timeout: 2000 });
+      bridge.dispose(); // reject the pending call
+      // Caller awaits asynchronously (after a macrotask), reproducing the gap
+      // that previously triggered a global unhandledrejection.
+      await new Promise((r) => setTimeout(r, 20));
+      await p.catch(() => {});
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    assert.equal(fired.length, 0, "dispose() rejection leaked an unhandledrejection");
   });
 });

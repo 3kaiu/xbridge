@@ -138,11 +138,19 @@ public class XBridgePlugin: NSObject, FlutterPlugin {
 
         let params = call.arguments
 
-        // Security policy check (defense-in-depth: if origin is configured, enforce allowlist).
-        if let currentOrigin = origin, !securityPolicy.allows(origin: currentOrigin) {
+        // 安全收紧（fail-closed + 能力级鉴权）：
+        // 1) origin 未设置（nil）直接拒绝 —— 与同步 bypass 路径一致，
+        //    避免异步 MethodChannel 在未授权 origin 下被放行，架空 denyAll 兜底。
+        // 2) origin 必须通过 `allows` 来源级校验。
+        // 3) 再通过 `isMethodAllowed` 能力级校验（publicMethods / originMethodRules），
+        //    使异步通道与同步路径具备同等 gates。
+        if origin == nil
+            || !securityPolicy.allows(origin: origin)
+            || !securityPolicy.isMethodAllowed(origin: origin, method: method)
+        {
             result(FlutterError(
                 code: "ORIGIN_NOT_ALLOWED",
-                message: "Origin '\(currentOrigin)' is not permitted by the security policy",
+                message: "Origin '\(origin ?? "nil")' is not permitted by the security policy for method '\(method)'",
                 details: nil
             ))
             return

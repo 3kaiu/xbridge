@@ -148,30 +148,52 @@ public struct XBridgeSecurityPolicy {
     }
 
     /// Check if the given origin is permitted to invoke the specific method.
-    public func isMethodAllowed(origin: String?, method: String) -> Bool {
+    /// - Parameters:
+    ///   - origin: The origin string, or `nil` when unknown (`nil` is rejected).
+    ///   - method: The business method name.
+    ///   - isMainFrame: Frame-attribution hard gate. `nil` (default) treats the
+    ///     call as main-frame for backward compatibility; `false` (proven
+    ///     non-main-frame / iframe) is **always rejected**, even if `origin` is
+    ///     allowlisted. Mirrors the Android `isMethodAllowed` signature.
+    public func isMethodAllowed(
+        origin: String?,
+        method: String,
+        isMainFrame: Bool? = true
+    ) -> Bool {
+        // fail-closed：只有显式白名单命中才放行；其余默认拒绝。
+        // 删除了旧版「originMethodRules 为空即放行全部方法」的宽松兜底，
+        // 否则只配置 allowedOrigins + publicMethods 时能力级鉴权形同虚设。
         if allowAll {
             return true
+        }
+        // frame 归属硬门槛：确证非主 frame 的调用直接拒绝，先于一切白名单判定。
+        // 与 Android 侧同语义；iOS 的 `WKScriptMessage.frameInfo.isMainFrame`
+        // 即可提供该事实。
+        if let isMainFrame = isMainFrame, !isMainFrame {
+            return false
         }
         guard allows(origin: origin) else {
             return false
         }
+        // 显式公共白名单命中即放行。
         if publicMethods.contains(method) {
             return true
         }
-        if originMethodRules.isEmpty {
-            return true
-        }
-        guard let origin = origin else {
-            return false
-        }
-        let normalized = XBridgeSecurityPolicy.normalizeOrigin(origin)
-        for (pattern, methods) in normalizedOriginMethodRules {
-            if pattern == normalized || XBridgeSecurityPolicy.matchesPattern(pattern: pattern, actual: normalized) {
-                if methods.contains(method) || methods.contains("*") {
-                    return true
+        // 按来源细分的方法规则；规则非空时才参与判决。
+        if !originMethodRules.isEmpty {
+            guard let origin = origin else {
+                return false
+            }
+            let normalized = XBridgeSecurityPolicy.normalizeOrigin(origin)
+            for (pattern, methods) in normalizedOriginMethodRules {
+                if pattern == normalized || XBridgeSecurityPolicy.matchesPattern(pattern: pattern, actual: normalized) {
+                    if methods.contains(method) || methods.contains("*") {
+                        return true
+                    }
                 }
             }
         }
+        // 未命中任何白名单：默认拒绝。
         return false
     }
 

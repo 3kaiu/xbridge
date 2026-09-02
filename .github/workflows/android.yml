@@ -31,31 +31,96 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Verify Kotlin sources are syntactically valid
+      - name: Verify Kotlin internal consistency (fail on xbridge-internal drift)
         run: |
-          # Download the Kotlin compiler and verify all .kt files parse.
-          # We can't do a full typecheck without the Android SDK + Flutter
-          # SDK jars, but we CAN verify syntax correctness by compiling with
-          # the JDK classpath. Unresolved references (Android/Flutter classes)
-          # are expected — we only fail on actual syntax/parse errors.
+          # 无 Android SDK + Flutter SDK 时无法完整类型检查。这里把 xbridge 自身
+          # 的所有 .kt 一起编译，达到两层效果：
+          #   1. xbridge 内部引用全部解析 → 若内部类型/签名漂移，会出现指向
+          #      xbridge 自身符号的 "unresolved reference"，直接失败。
+          #   2. 其余 unresolved 只能是外部 SDK（android.* / flutter.* / org.json）
+          #      产生的 → 用受控白名单放行。
+          # 注意：不能用「非 unresolved 的 error 一律失败」当门禁 —— 缺少 SDK
+          # 类型时 kotlinc(K2) 会在健康代码上产生级联假阳性（如
+          # "overrides nothing"、无权重的 "cannot infer type"），会误伤。
           curl -sL https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip -o /tmp/kotlin.zip
           unzip -q /tmp/kotlin.zip -d /tmp
           export PATH="/tmp/kotlinc/bin:$PATH"
-          # Source files are now in xbridge-core/ and xbridge-flutter/ submodules.
           KOTLIN_FILES=$(find xbridge-core/src/main/java xbridge-flutter/src/main/java -name '*.kt' 2>/dev/null)
           if [ -z "$KOTLIN_FILES" ]; then
             echo "::error::No Kotlin source files found"
             exit 1
           fi
-          # Compile with -d /dev/null. Unresolved reference errors are expected
-          # (no Android SDK); we grep for "e: " syntax/parse errors only.
-          kotlinc $KOTLIN_FILES -d /dev/null -cp "$JAVA_HOME/lib/*" 2>&1 | tee /tmp/kotlinc-out.txt || true
-          # Check for syntax errors (lines starting with "e: " that aren't
-          # "unresolved reference" — those are just missing Android classes).
-          SYNTAX_ERRORS=$(grep "^e: " /tmp/kotlinc-out.txt | grep -v "unresolved reference" | head -5 || true)
-          if [ -n "$SYNTAX_ERRORS" ]; then
-            echo "::error::Kotlin syntax/type errors found:"
-            echo "$SYNTAX_ERRORS"
+          # 注意：健康代码也会因缺失 SDK 报 unresolved + K2 级联假阳性，kotlinc
+          # 会返回非零。GH Actions 默认 bash -e，必须 `|| true` 才能继续到下面的
+          # 漂移判定；是否失败完全由「内部符号漂移」检查决定。
+          kotlinc $KOTLIN_FILES -d /dev/null 2>&1 | tee /tmp/kotlinc-out.txt || true
+          # 外部 SDK / JDK 表面符号白名单：无 SDK 编译下唯一允许的 unresolved。
+          # xbridge 自身的符号绝不在其中 —— 出现即内部漂移。
+          EXTERNAL_REFS=$(cat <<'EOF'
+          android
+          androidx
+          flutter
+          FlutterPlugin
+          FlutterEngine
+          MethodChannel
+          MethodCall
+          Handler
+          Looper
+          Log
+          WebView
+          JavascriptInterface
+          JSONObject
+          json
+          arguments
+          argument
+          method
+          methods
+          success
+          error
+          size
+          notImplemented
+          binaryMessenger
+          invokeMethod
+          setMethodCallHandler
+          addJavascriptInterface
+          removeJavascriptInterface
+          add
+          plugins
+          keys
+          length
+          host
+          port
+          scheme
+          EOF
+          )
+          FAILED=""
+          for sym in $(grep -E "unresolved reference '(.*)'" /tmp/kotlinc-out.txt \
+                         | sed -E "s/.*unresolved reference '(.*)'.*/\1/" | sort -u); do
+            if ! echo "$EXTERNAL_REFS" | grep -qx "$sym"; then
+              FAILED="$FAILED
+            非外部 SDK 的 unresolved 引用符号: $sym"
+            fi
+          done
+          if [ -n "$FAILED" ]; then
+            echo "::error::xbridge 内部符号疑似漂移：$FAILED"
             exit 1
           fi
-          echo "✓ Kotlin sources parse cleanly (unresolved references to Android/Flutter classes are expected)"
+          echo "✓ Kotlin 内部一致性校验通过（内部引用可解析；外部 SDK unresolved 按受控白名单放行）"
+
+      - name: Compile with real compileSdk (authoritative override check)
+        run: |
+          # 权威门禁：用真实 compileSdk 34 完整编译。`com.android.library` 插件的
+          # compileSdk 会让 Gradle 从 Google Maven 自动下载 platform android.jar，
+          # 使 android.webkit.WebView / org.json 等真解析 —— 相比上面的轻量 kotlinc
+          # 门禁，这里才是 override/抽象成员/签名校验真正执行的地方。
+          #
+          # 背景（修复 A1 的 P0 盲区）：`android.webkit.WebMessageListener` 是非公开
+          # API，不在 platform android.jar 中。轻量门禁只查 unresolved 引用，会把这类
+          # 符号放行；且接口类型 unresolved 时 K2 会跳过 override 校验，导致「编译通过」
+          # 是假象。这里一旦引入不存在的 SDK 类型，Gradle 编译会因 unresolved/
+          # override 失败而硬失败，杜绝 A1 式回归。
+          #
+          # GitHub-hosted runner 预装 Android SDK（$ANDROID_HOME 已指向 platform），
+          # compileSdk 34 会自动解析。任何编译错误（非「xbridge 内部一致」白名单逻辑）
+          # 都直接 fail —— 这是真正的守卫。
+          ./gradlew :xbridge-core:compileReleaseKotlin :xbridge-flutter:compileReleaseKotlin --console=plain

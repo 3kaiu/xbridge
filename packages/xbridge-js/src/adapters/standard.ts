@@ -138,7 +138,7 @@ export class StandardAdapter implements IXBridgeAdapter {
   /** Stored override functions so we can detect if the host replaced them. */
   private _resolveOverride: ((id: string, result?: unknown) => void) | null = null;
   private _rejectOverride: ((id: string, error?: unknown) => void) | null = null;
-  private _inboundOverride: ((requestJson: string) => void) | null = null;
+  private _inboundOverride: ((request: string | object) => void) | null = null;
 
   /** Snapshot of pre-override globals, for restoration in `destroy()`. */
   private saved: SavedOriginals | null = null;
@@ -323,7 +323,7 @@ export class StandardAdapter implements IXBridgeAdapter {
     );
   }
 
-  onMessage(handler: (raw: string) => void): void {
+  onMessage(handler: (raw: string | object) => void): void {
     // Re-installing replaces the previous handler.
     this.handler = handler;
     const w = getWindow();
@@ -369,11 +369,15 @@ export class StandardAdapter implements IXBridgeAdapter {
     // the host bootstrap and can orphan in-flight host-side responses.
     if (w.__XBridge__.resolve !== this._resolveOverride) {
       this._resolveOverride = (id: string, result?: unknown): void => {
+        // 显式保留 `result` 键：当宿主对 void 方法不传结果时（`result` 为
+        // `undefined`），`JSON.stringify` 会省略该键，导致内核的 `isResponse`
+        // 判不中（要求存在 `result in msg`）而把整条响应作事件静默丢弃，
+        // pending 调用会一直挂到超时。这里统一补齐为 `result: null` 以保住键。
         handler(
           JSON.stringify({
             jsonrpc: XBRIDGE_PROTOCOL_VERSION,
             id,
-            result,
+            result: result ?? null,
           }),
         );
       };
@@ -420,8 +424,10 @@ export class StandardAdapter implements IXBridgeAdapter {
 
     // Override the inbound request dispatcher — same guard.
     if (w.__XBridgeInbound__ !== this._inboundOverride) {
-      this._inboundOverride = (requestJson: string): void => {
-        handler(requestJson);
+      this._inboundOverride = (request: string | object): void => {
+        // 统一把对象字面量规整为 JSON 字符串交给内核，避免对象被
+        // JSON.stringify 之外的路径以原始对象形态产出分歧。
+        handler(typeof request === "string" ? request : JSON.stringify(request));
       };
       try {
         w.__XBridgeInbound__ = this._inboundOverride;

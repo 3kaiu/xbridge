@@ -3,10 +3,10 @@ apply plugin: 'kotlin-android'
 
 // ── Maven distribution metadata ──────────────────────────────────────────────
 // Pure native apps can depend on this module alone:
-//   implementation 'com.github.3kaiu.xbridge:xbridge-core:0.1.0'
+//   implementation 'com.github.3kaiu.xbridge:xbridge-core:0.1.4'
 // (JitPack resolves the group from the GitHub org/repo)
 group = 'io.xbridge'
-version = '0.1.0'
+version = '0.1.4'
 
 android {
     namespace 'io.xbridge.core'

@@ -338,7 +338,9 @@ class BridgeController {
     if (origin == null) {
       return false;
     }
-    return policy.isMethodAllowed(origin, request.method);
+    // Flutter 协议层发起的调用本就在主 frame 作用域，显式 isMainFrame=true
+    // 与 Android/iOS 原生判定对齐（方案 A1）。
+    return policy.isMethodAllowed(origin, request.method, isMainFrame: true);
   }
 
   /// Explicitly sets the current page origin, used by the security policy.

@@ -9,6 +9,9 @@ dist/
 build/
 target/
 
+# Gradle caches (local per-project build cache, never commit)
+.gradle/
+
 # Lockfiles (uncomment to ignore if you prefer workspace-level lock management)
 # package-lock.json
 # pubspec.lock

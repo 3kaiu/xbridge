@@ -1,0 +1,58 @@
+# =============================================================================
+# native-sync-check.yml — Flutter 原生副本「单一事实源」一致性门禁
+#
+# 背景：原生层（xbridge-android / xbridge-ios）是唯一事实源，Flutter 层
+#       （xbridge_flutter/android、xbridge_flutter/ios）是单向同步的副本。
+#       本 workflow 在 PR / main push 时校验副本与源逐字节一致，防止漂移。
+#
+#       仅做源码文本一致性校验（不编译），与 android.yml / ios.yml 的
+#       "语法检查"互补：android.yml 会过滤 unresolved reference，无法拦截
+#       "接口签名不一致 / 双份代码演进"类的结构漂移；本门禁正好补上这层。
+#
+# 修复漂移：在本地修改"源"后运行 scripts/sync_native_to_flutter.sh，
+#           再把副本改动一并提交。
+# =============================================================================
+name: Native sync check (single source of truth)
+
+on:
+  pull_request:
+    paths:
+      - 'packages/xbridge-android/**'
+      - 'packages/xbridge-ios/**'
+      - 'packages/xbridge_flutter/android/**'
+      - 'packages/xbridge_flutter/ios/**'
+      - 'scripts/sync_native_to_flutter.sh'
+      - '.github/workflows/native-sync-check.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/xbridge-android/**'
+      - 'packages/xbridge-ios/**'
+      - 'packages/xbridge_flutter/android/**'
+      - 'packages/xbridge_flutter/ios/**'
+      - 'scripts/sync_native_to_flutter.sh'
+      - '.github/workflows/native-sync-check.yml'
+
+jobs:
+  sync-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 Flutter 原生副本与单一事实源一致
+        run: |
+          bash scripts/sync_native_to_flutter.sh --check
+
+      - name: 同步失败时给出修复指引
+        if: failure()
+        run: |
+          cat <<'EOF'
+          检测到 Flutter 原生副本（xbridge_flutter/android、xbridge_flutter/ios）
+          与唯一事实源（xbridge-android、xbridge-ios）不一致。
+
+          请按以下顺序修复，不要直接修改副本：
+            1) 在唯一事实源（xbridge-android / xbridge-ios）中修改原生逻辑；
+            2) 运行： scripts/sync_native_to_flutter.sh   （把源同步到副本）
+            3) 重新提交同步产生的副本改动。
+          EOF
+          exit 1

@@ -1,6 +1,6 @@
 name: xbridge_protocol
 description: XBridge JSON-RPC 2.0 protocol layer and domain core contracts — zero dependencies.
-version: 0.1.0
+version: 0.1.4
 publish_to: none
 
 environment:

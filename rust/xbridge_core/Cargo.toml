@@ -1,6 +1,6 @@
 [package]
 name = "xbridge_core"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2021"
 description = "XBridge local WebSocket server — high-perf streaming bypass for cross-platform bridge SDK"
 license = "MIT"

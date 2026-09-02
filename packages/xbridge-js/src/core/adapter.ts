@@ -28,10 +28,13 @@ export interface IXBridgeAdapter {
 
   /**
    * Install the inbound handler. Called once by the core. Implementations
-   * must route every subsequently-received raw wire string into `handler`.
+   * must route every subsequently-received raw wire message into `handler`.
    * Re-installing replaces the previous handler.
+   *
+   * `raw` may be a JSON string or an object literal (e.g. the Flutter host
+   * injecting `window.__XBridgeInbound__({...})`). The core normalizes both.
    */
-  onMessage(handler: (raw: string) => void): void;
+  onMessage(handler: (raw: string | object) => void): void;
 
   /**
    * Whether the underlying transport is present in the current environment.

@@ -114,6 +114,42 @@ void main() {
       // Untrusted origins rejected for all methods
       expect(policy.isMethodAllowed('https://evil.com', 'getAppInfo'), isFalse);
       expect(policy.isMethodAllowed('https://evil.com', 'payment'), isFalse);
+
+      // (方案 A1) 非主 frame 硬门槛：即使 origin 已允许、方法已白名单，
+      // isMainFrame=false 仍一律拒绝；isMainFrame=true 不受影响。
+      expect(
+        policy.isMethodAllowed(
+          'https://app.example.com',
+          'getAppInfo',
+          isMainFrame: false,
+        ),
+        isFalse,
+      );
+      expect(
+        policy.isMethodAllowed(
+          'https://app.example.com',
+          'payment',
+          isMainFrame: false,
+        ),
+        isFalse,
+      );
+      expect(
+        policy.isMethodAllowed(
+          'https://app.example.com',
+          'getAppInfo',
+          isMainFrame: true,
+        ),
+        isTrue,
+      );
+      // allowAll 策略不受 frame 门槛影响（开发模式）。
+      expect(
+        XBridgeSecurityPolicy.allowAll().isMethodAllowed(
+          'https://anything.example.com',
+          'getAppInfo',
+          isMainFrame: false,
+        ),
+        isTrue,
+      );
     });
   });
 }

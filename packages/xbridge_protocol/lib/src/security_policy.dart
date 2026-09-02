@@ -96,31 +96,44 @@ class XBridgeSecurityPolicy {
   }
 
   /// Returns `true` if [origin] is allowed to invoke the specific [method].
-  bool isMethodAllowed(String? origin, String method) {
+  ///
+  /// **fail-closed**：只有显式白名单命中才放行；其余默认拒绝。
+  /// 删除了旧版「[originMethodRules] 为空即放行全部方法」的宽松兜底，
+  /// 否则只配置 [allowedOrigins] + [publicMethods] 时能力级鉴权形同虚设。
+  ///
+  /// [isMainFrame] 是 frame 归属硬门槛（方案 A1）：
+  /// - `null`（默认，存量调用方未确证 frame）按主 frame 处理，向后兼容；
+  /// - `false` 表示来自明确的非主 frame（iframe / 子 frame），**一律拒绝**，
+  ///   早于 origin/method 判定——即使 [allowedOrigins] 命中也不例外。
+  bool isMethodAllowed(String? origin, String method, {bool? isMainFrame = true}) {
     if (allowAll) {
       return true;
+    }
+    // frame 归属硬门槛：确证非主 frame 的调用直接拒绝。
+    if (isMainFrame != null && !isMainFrame) {
+      return false;
     }
     if (!allows(origin)) {
       return false;
     }
+    // 显式公共白名单命中即放行。
     if (publicMethods.contains(method)) {
       return true;
     }
-    if (originMethodRules.isEmpty) {
-      // Default: if no granular method rules are configured, all methods are permitted
-      // for allowed origins (maintains full backward compatibility).
-      return true;
-    }
-    final normalized = _normalizeOrigin(origin!);
-    for (final entry in _normalizedOriginMethodRules.entries) {
-      final pattern = entry.key;
-      final allowedMethods = entry.value;
-      if (pattern == normalized || _matchesPattern(pattern, normalized)) {
-        if (allowedMethods.contains(method) || allowedMethods.contains('*')) {
-          return true;
+    // 按来源细分的方法规则；规则非空时才参与判决。
+    if (originMethodRules.isNotEmpty) {
+      final normalized = _normalizeOrigin(origin!);
+      for (final entry in _normalizedOriginMethodRules.entries) {
+        final pattern = entry.key;
+        final allowedMethods = entry.value;
+        if (pattern == normalized || _matchesPattern(pattern, normalized)) {
+          if (allowedMethods.contains(method) || allowedMethods.contains('*')) {
+            return true;
+          }
         }
       }
     }
+    // 未命中任何白名单：默认拒绝。
     return false;
   }
 

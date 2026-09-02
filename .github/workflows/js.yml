@@ -31,6 +31,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      # 关键门禁：运行生产测试。测试 import 自 `dist/`（构建产物），因此必须
+      # 在 build 之后执行。此前测试从未被 CI 运行，改 src 忘 build 会静默
+      # 发布与 src 漂移的旧 dist，且无任何运行时测试兜底。
+      - run: npm test
       - run: npm pack --dry-run
 
       - uses: actions/upload-artifact@v4

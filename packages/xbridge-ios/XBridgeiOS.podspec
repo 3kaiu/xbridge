@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'XBridgeiOS'
-  s.version          = '0.1.0'
+  s.version          = '0.1.4'
   s.summary          = 'Generic, business-free cross-platform bridge SDK for iOS (sync bypass + local WS + Flutter fallback).'
   s.description      = <<-DESC
 XBridgeiOS is the native iOS component of the XBridge SDK. It provides:
@@ -23,7 +23,10 @@ XBridgeiOS is the native iOS component of the XBridge SDK. It provides:
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
   s.author           = { 'XBridge Contributors' => 'dev@xbridge.io' }
 
-  s.source           = { :git => 'https://github.com/3kaiu/xbridge.git', :tag => s.version.to_s }
+  # 注意：git tag 统一使用 `v` 前缀（如 v0.1.4）。这里必须带 v，否则
+  # CocoaPods 会去找不带前缀的 tag（0.1.4），而仓库里并不存在该 tag，
+  # 造成发布阻断。以 `v#{s.version}` 与仓库 tag 约定保持一致。
+  s.source           = { :git => 'https://github.com/3kaiu/xbridge.git', :tag => "v#{s.version}" }
   s.ios.deployment_target = '13.0'
   s.swift_version         = '5.9'
 

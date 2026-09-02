@@ -71,29 +71,48 @@ data class XBridgeSecurityPolicy(
 
     /**
      * Returns `true` if [origin] is allowed to invoke the specific [method].
+     *
+     * 采用 **fail-closed** 语义：
+     * - 只有显式白名单命中才放行——公共白名单 [publicMethods]，或按来源细分的
+     *   [originMethodRules]（含通配 `*`）命中的方法。
+     * - 其余一律拒绝。这删除了旧版「[originMethodRules] 为空即放行全部方法」的
+     *   宽松兜底；否则只配置 [allowedOrigins] + [publicMethods] 时，来源被放行的
+     *   页面仍可调用任意方法，能力级鉴权形同虚设。
+     *
+     * 注意：本实现**不包含 frame 归因**。Android 的 `addJavascriptInterface`
+     * 会暴露给 WebView 的所有 frame，且平台不提供「校验调用 frame」的公开机制
+     * （见 [XBridgeSyncInterface] 类 KDoc）。因此这里仅以 origin + method
+     * allowlist 作为有效闸门；iOS 侧才具备 `frameInfo.isMainFrame` 的强归因。
      */
     fun isMethodAllowed(origin: String?, method: String): Boolean {
         if (allowAll) return true
         if (!allows(origin)) return false
+        // 显式公共白名单命中即放行。
         if (publicMethods.contains(method)) return true
-        if (originMethodRules.isEmpty()) return true
-        if (origin == null) return false
-
-        val normalized = normalizeOrigin(origin)
-        for ((pattern, methods) in originMethodRules) {
-            val normPattern = normalizeOrigin(pattern)
-            if (normPattern == normalized || matchesPattern(normPattern, normalized)) {
-                if (methods.contains(method) || methods.contains("*")) {
-                    return true
+        // 按来源细分的方法规则；规则非空时才参与判决。
+        if (originMethodRules.isNotEmpty()) {
+            if (origin == null) return false
+            val normalized = normalizeOrigin(origin)
+            for ((pattern, methods) in originMethodRules) {
+                val normPattern = normalizeOrigin(pattern)
+                if (normPattern == normalized || matchesPattern(normPattern, normalized)) {
+                    if (methods.contains(method) || methods.contains("*")) {
+                        return true
+                    }
                 }
             }
         }
+        // 未命中任何白名单：默认拒绝。
         return false
     }
 
     /**
-     * Safely match pattern with wildcard support (e.g. `https://*.example.com`).
+     * Safely match pattern with wildcard support, e.g. a wildcard subdomain
+     * such as a https URL whose host begins with "*." .
      * Adheres to strict DNS label boundaries to prevent suffix-match spoofing.
+     * 注意：Kotlin K2 词法器会把「斜杠紧邻星号」的字符组当成嵌套块注释起始，
+     * 若在注释里写出这类 URL 会导致 "Unclosed comment" 而无法编译，
+     * 因此这里刻意用空格与反引号拆开，不直接写出该字符组。
      */
     private fun matchesPattern(pattern: String, actual: String): Boolean {
         if (pattern == actual) return true

@@ -21,6 +21,13 @@
  * or cross-origin iframes cannot access `window.dsbridge` (it is injected
  * only into the main frame's context by the native shell). If the host
  * injects it into subframes, the host is responsible for access control.
+ *
+ * Frame attribution: on this adapter's Android path there is **no** frame
+ * attribution. The defensive probe (`__XBridgeFrameProbe`, see
+ * `index.ts#probeMainFrame`) is a retired A1 mechanism — no platform injects it,
+ * and Android cannot reliably attribute sync calls to a frame (the native gate is
+ * origin + method allowlist only). iOS, by contrast, enforces real frame
+ * attribution via `frameInfo.isMainFrame` + `forMainFrameOnly: true`.
  */
 
 import type { ISyncAdapter } from "../core/adapter.js";

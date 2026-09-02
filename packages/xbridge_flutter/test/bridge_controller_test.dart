@@ -66,8 +66,12 @@ void main() {
   });
 
   test('allows calls matching security policy', () async {
+    // fail-closed：来源放行后仍需把目标方法列入 publicMethods 才能调用。
     controller.setSecurityPolicy(
-      XBridgeSecurityPolicy.allowlist({'https://app.example.com'}),
+      XBridgeSecurityPolicy.capabilities(
+        allowedOrigins: {'https://app.example.com'},
+        publicMethods: {'getAppInfo'},
+      ),
     );
     controller.setCurrentOrigin('https://app.example.com');
 
@@ -125,7 +129,10 @@ void main() {
 
   test('enforces rate limiting and emits security telemetry events', () async {
     controller.setSecurityPolicy(
-      XBridgeSecurityPolicy.allowlist({'https://app.example.com'}),
+      XBridgeSecurityPolicy.capabilities(
+        allowedOrigins: {'https://app.example.com'},
+        publicMethods: {'getAppInfo'},
+      ),
     );
     controller.setCurrentOrigin('https://app.example.com');
     controller.setRateLimiter(
@@ -169,7 +176,10 @@ void main() {
 
   test('origin captured on page start immediately enables security policy validation', () async {
     controller.setSecurityPolicy(
-      XBridgeSecurityPolicy.allowlist({'https://secure.example.com'}),
+      XBridgeSecurityPolicy.capabilities(
+        allowedOrigins: {'https://secure.example.com'},
+        publicMethods: {'getAppInfo'},
+      ),
     );
 
     // Simulate onPageStarted updating origin before onPageFinished

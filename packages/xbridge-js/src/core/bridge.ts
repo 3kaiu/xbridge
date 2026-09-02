@@ -196,19 +196,45 @@ export class XBridgeCore {
    *   immediately after `send` (fire-and-forget) — matches the WK no-callback
    *   semantics where `requestId` is `null`.
    */
-  async call(method: string, params?: unknown, options?: XBridgeCallOptions): Promise<unknown> {
+  call(method: string, params?: unknown, options?: XBridgeCallOptions): Promise<unknown> {
     const hasFallback = options !== undefined && "fallback" in options;
     const readyTimeout = options?.readyTimeout ?? 1500;
-    if (!this.isConnected() && readyTimeout > 0) {
-      try {
-        await this.ready(readyTimeout);
-      } catch {
-        if (hasFallback) {
-          return (options as XBridgeCallOptions).fallback;
+    // 关键：`call` 不能是 async，否则 `return pendingPromise` 会让 async 机制
+    // 生成一个「采纳后的新 promise」返回给调用方，而本方法内的 no-op catch 若只
+    // 挂在内部 `pendingPromise` 上，就保护不了调用方实际持有的那个采纳 promise，
+    // 造成 dispose/超时 reject 时仍触发全局 `unhandledrejection`（P2 F2）。
+    // 这里统一包一层 async IIFE 得到唯一的 `outer` promise，并把 no-op catch
+    // 挂在 `outer` 上（调用方拿到的正是它），使 WebKit 缓解真正生效；调用方后续
+    // 的 `await`/`catch` 仍是同一 promise 的第二个 handler，依然能看到拒绝。
+    const outer = (async (): Promise<unknown> => {
+      if (!this.isConnected() && readyTimeout > 0) {
+        try {
+          await this.ready(readyTimeout);
+        } catch {
+          if (hasFallback) {
+            return (options as XBridgeCallOptions).fallback;
+          }
         }
       }
-    }
 
+      return this.callDispatch(method, params, options, hasFallback);
+    })();
+    // Attach a no-op catch to suppress WebKit's transient unhandledrejection
+    // (the caller's `await`/`catch` will still observe the rejection).
+    outer.catch(() => {});
+    return outer;
+  }
+
+  /**
+   * Core dispatch for {@link call} after the ready handshake completes.
+   * Returns the promise that settles with the response (or rejection).
+   */
+  private callDispatch(
+    method: string,
+    params?: unknown,
+    options?: XBridgeCallOptions,
+    hasFallback: boolean = false,
+  ): Promise<unknown> {
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
     const noCallback = options?.noCallback === true;
 
@@ -251,15 +277,7 @@ export class XBridgeCore {
         if (hasFallback) {
           return Promise.resolve((options as XBridgeCallOptions).fallback);
         }
-        // WebKit mitigation: attach a dummy handler before returning the
-        // rejected promise so the engine does not fire `unhandledrejection`
-        // during the microtask gap between `reject()` and the caller's
-        // `await` attaching its handler (iOS 16.x / macOS 10.15 WebKit).
-        const rejected = Promise.reject(err);
-        // Mark as handled globally — the caller's `await` will still receive
-        // the rejection via a second handler attached to the same promise.
-        rejected.catch(() => {});
-        return rejected;
+        return Promise.reject(err);
       }
       return Promise.resolve(undefined);
     }
@@ -301,18 +319,9 @@ export class XBridgeCore {
           resolve((options as XBridgeCallOptions).fallback);
           return;
         }
-        // WebKit: ensure a handler is attached at least once so the
-        // transient `unhandledrejection` between `reject()` and the
-        // caller's `await` scheduling does not fire as a global error.
-        // We do this by scheduling a dummy microtask handler via the
-        // dispatcher promise's own catch — the outer `pendingPromise`
-        // will still reject to the caller.
         reject(err);
       }
     });
-    // Attach a no-op catch to suppress WebKit's transient unhandledrejection
-    // (the caller's `await`/`catch` will still observe the rejection).
-    pendingPromise.catch(() => {});
     return pendingPromise;
   }
 
@@ -444,17 +453,32 @@ export class XBridgeCore {
     }
     this.messageHandlerBound = true;
     // Single installed handler — bound once, no per-message allocation.
-    this.adapter.onMessage((raw: string): void => {
+    this.adapter.onMessage((raw: string | object): void => {
       this.handleRaw(raw);
     });
     if (this.fallbackAdapter) {
-      this.fallbackAdapter.onMessage((raw: string): void => {
+      this.fallbackAdapter.onMessage((raw: string | object): void => {
         this.handleRaw(raw);
       });
     }
   }
 
-  private handleRaw(raw: string): void {
+  private handleRaw(raw: string | object): void {
+    // 兼容两种入站形态：Dart 注入 `window.__XBridgeInbound__({...})` 传入对象
+    // 字面量，而本地 JS/原生 adapter 传入 JSON 字符串。若对对象直接
+    // JSON.parse，对象会被 ToString 化成 "[object Object]" 而静默丢弃，
+    // 导致 Flutter→H5 回调失效。这里统一先规整为字符串再解析。
+    if (typeof raw !== "string") {
+      try {
+        raw = JSON.stringify(raw);
+      } catch {
+        // 无法序列化（如循环引用）则按非法入站丢弃
+        if (typeof console !== "undefined") {
+          console.warn("[XBridge] dropped non-serializable inbound message");
+        }
+        return;
+      }
+    }
     let msg: XBridgeMessage;
     try {
       msg = JSON.parse(raw) as XBridgeMessage;

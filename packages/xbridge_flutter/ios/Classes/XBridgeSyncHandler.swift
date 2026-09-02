@@ -266,7 +266,15 @@ public class XBridgeSyncHandler: NSObject, WKScriptMessageHandler {
 
             // Security policy check (defense-in-depth).
             let origin = frameOriginString ?? self.originProvider()
-            if !self.securityPolicy.isMethodAllowed(origin: origin, method: method) {
+            // Frame attribution: feed the actual `isMainFrame` from the
+            // `WKScriptMessage` so a call from a subframe/iframe is rejected
+            // by the policy's hard gate (方案 A1), even if its origin is
+            // allowlisted.
+            if !self.securityPolicy.isMethodAllowed(
+                origin: origin,
+                method: method,
+                isMainFrame: message.frameInfo.isMainFrame
+            ) {
                 self.pushError(
                     callbackId: callbackId,
                     code: "BRIDGE_METHOD_FORBIDDEN",

@@ -77,7 +77,7 @@ export interface XBridgeOptions {
 class NoopAdapter implements IXBridgeAdapter {
   readonly name = "Noop";
   private _delegate: StandardAdapter | null = null;
-  private _handler: ((raw: string) => void) | null = null;
+  private _handler: ((raw: string | object) => void) | null = null;
 
   private get delegate(): StandardAdapter {
     if (this._delegate === null) {
@@ -114,7 +114,7 @@ class NoopAdapter implements IXBridgeAdapter {
     return this.delegate.send(_message);
   }
 
-  onMessage(handler: (raw: string) => void): void {
+  onMessage(handler: (raw: string | object) => void): void {
     this._handler = handler;
     // Eagerly wire delegate so that Native→H5 inbound requests/events that
     // arrive before the first H5→Native `send()` are not lost (cold-start
@@ -230,6 +230,58 @@ function pickSyncAdapter(env: SniffCache): ISyncAdapter | undefined {
 }
 
 /**
+ * 主 frame 归属探测上报（预留的 A1 兼容 hook）。
+ *
+ * **历史背景**：早期为对齐 iOS 的 frame 归因，设想让 Android 原生侧通过
+ * `addWebMessageListener("__XBridgeFrameProbe", ...)` 注入一个仅用于归因的探针，
+ * 由这里在主 frame 上报一次标记。但审计结论（方案乙·诚实降级）已明确：Android
+ * 的 `@JavascriptInterface` 暴露给所有 frame，平台无法可靠判定调用 frame，
+ * 且 `addWebMessageListener` 属非公开 SDK API（不在 platform android.jar 中），
+ * 因此该机制已在 Android 侧**整体移除**——当前没有任何平台注入 `__XBridgeFrameProbe`。
+ *
+ * 现状：此函数在 Android/iOS 均为**惰性死代码**——`__XBridgeFrameProbe` 不存在时
+ * `fn` 恒为 undefined，直接返回，零副作用。保留它只作为对外可能存在的消费者引用
+ * `FrameProbeGlobal` 类型的内聚锚点，不构成任何安全机制。若未来有宿主独立注入该
+ * 探针需自行负责访问控制；本函数**不提供** frame 归因，也不会被 `isMethodAllowed`
+ * 消费。
+ *
+ * 幂等：`probePosted` 是模块级标志，**每页 / 每模块加载至多上报一次**
+ *（而非「每个实例」——任意 `XBridge` 实例上报后，后续实例都不再重复）。
+ */
+export interface FrameProbeGlobal {
+  __XBridgeFrameProbe?: { postMessage?: (msg: unknown) => void };
+}
+
+let probePosted = false;
+
+function probeMainFrame(): void {
+  if (probePosted) {
+    return;
+  }
+  if (typeof globalThis === "undefined") {
+    return;
+  }
+  const w = globalThis as unknown as WindowForSniff & FrameProbeGlobal;
+  const fn = w.__XBridgeFrameProbe?.postMessage;
+  if (typeof fn !== "function") {
+    return;
+  }
+  // 主 frame 才上报；子 frame（`window.top !== window`）跳过。
+  try {
+    if (typeof window !== "undefined" && window.top !== window) {
+      return;
+    }
+  } catch {
+    // cross-origin 访问 window.top 可能抛异常（浏览器的 SOP 限制）。此时无法
+    // 判定父子关系。注意：该 hook 当前是惰性的（无平台注入 `__XBridgeFrameProbe`），
+    // 而 Android 也**不存在** `isMainFrame` 归因——即便真拿到 `fn`，也只能当作一个
+    // 通用标记上报，不得再据此断言 frame 归属。
+  }
+  probePosted = true;
+  fn.call(w.__XBridgeFrameProbe, { type: "xbridge-frame-probe" });
+}
+
+/**
  * H5-facing facade. Construct once and reuse; the auto-sniff runs a single
  * time across all instances (cached).
  */
@@ -241,6 +293,8 @@ export class XBridge {
 
   constructor(options?: XBridgeOptions) {
     const env = detectEnv();
+    // 方案 A1：主 frame 归属探测上报（Android frame-aware 门控）。
+    probeMainFrame();
     if (
       options !== undefined &&
       (options.adapter !== undefined ||

@@ -37,6 +37,22 @@ import org.json.JSONObject
  * The [XBridgeSecurityPolicy] is checked if the origin can be determined.
  * In practice, the Flutter `BridgeController` is the primary security gate;
  * this native check is defense-in-depth for the sync bypass path.
+ *
+ * ## Frame attribution (平台能力边界)
+ *
+ * Android's `@JavascriptInterface` is exposed to **all frames** (including
+ * iframes) of the WebView, and the platform provides **no mechanism** to
+ * verify which frame invoked a call (`WebView.getUrl()` is explicitly
+ * documented as unreliable for this). Per Google security guidance and
+ * OWASP MASTG, it is not possible to attribute a sync call to a specific
+ * frame, so we **do not attempt** an approximation (a WebMessageListener
+ * probe would be neither reliable nor available as a public API).
+ *
+ * Therefore the effective gate on the sync bypass is the
+ * [XBridgeSecurityPolicy] origin + method allowlist — the same publicly
+ * supported mechanism recommended by Android. This is a deliberate, honest
+ * degradation vs. iOS's `frameInfo.isMainFrame` + `forMainFrameOnly: true`,
+ * which is a real capability. See also [XBridgeSecurityPolicy].
  */
 class XBridgeSyncInterface(
     private val nativeBridgeProvider: () -> XBridgeNativeBridge?,
@@ -52,21 +68,34 @@ class XBridgeSyncInterface(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
-     * Inject this interface into [webView] under the name `XBridgeSync`.
+     * Host-supplied origin (from the Flutter `BridgeController` page-origin
+     * tracking). Used as the origin source for the security policy check in
+     * [callSync].
+     */
+    private val hostOrigin: String?
+        get() = originProvider()
+
+    /**
+     * Attach this interface to [webView].
+     *
      * H5 code calls `window.XBridgeSync.callSync(method, paramsJson)`.
      *
      * **Security note**: Android's `addJavascriptInterface` exposes the
-     * object to **all frames**, including subframes and iframes. Unlike
-     * iOS's `forMainFrameOnly: true`, there is no API to restrict to the
-     * main frame. The [securityPolicyProvider] and [originProvider] checks
-     * in [callSync] are the mitigation — they evaluate the main frame's
-     * origin (set via `XBridgePluginRegistry.setOrigin`). Apps should also
+     * object to **all frames**, including subframes and iframes, and the
+     * platform offers no API to restrict to the main frame (no
+     * `forMainFrameOnly` equivalent). See the class KDoc — frame attribution
+     * is intentionally not attempted; the effective gate is the
+     * [XBridgeSecurityPolicy] origin + method allowlist. Apps should also
      * override `WebViewClient.shouldOverrideUrlLoading` to block navigation
      * to untrusted origins.
      */
     fun attach(webView: WebView) {
         webView.addJavascriptInterface(this, "XBridgeSync")
-        Log.i(TAG, "XBridgeSync interface attached to WebView (exposed to all frames — origin check is the mitigation)")
+        Log.i(
+            TAG,
+            "XBridgeSync interface attached to WebView " +
+                "(frame attribution unavailable on Android; gate stays in isMethodAllowed)",
+        )
     }
 
     /**
@@ -98,9 +127,11 @@ class XBridgeSyncInterface(
             return errorJson("NO_NATIVE_BRIDGE", "XBridgeNativeBridge not set")
         }
 
-        // Security policy check (defense-in-depth).
+        // Security policy check (defense-in-depth): origin + method.
+        // Frame attribution is NOT attempted on Android (platform limitation,
+        // see class KDoc) — the origin + method allowlist is the effective gate.
         val policy = securityPolicyProvider()
-        val origin = originProvider()
+        val origin = hostOrigin
         if (!policy.isMethodAllowed(origin, method)) {
             return errorJson(
                 "BRIDGE_METHOD_FORBIDDEN",

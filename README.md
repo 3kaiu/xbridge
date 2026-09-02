@@ -116,6 +116,23 @@ syncHandler.attach(to: webView)
 
 全部包位于 `packages/`（Flutter/Android/iOS/JS）与 `rust/xbridge_core`。
 
+### 原生代码「单一事实源」约定（务必阅读）
+
+原生层与 Flutter 层内容相同的原生能力，当前以**两份源码**形式共存：
+
+| 唯一事实源（在此修改） | 同步副本（勿直接改逻辑） |
+| --- | --- |
+| `packages/xbridge-android/`（JitPack SDK） | `packages/xbridge_flutter/android/`（Flutter plugin 原生目录） |
+| `packages/xbridge-ios/`（CocoaPods SDK） | `packages/xbridge_flutter/ios/`（Flutter plugin 原生目录） |
+
+**规则：**
+- Android/iOS 原生逻辑一律在**唯一事实源**（`xbridge-android` / `xbridge-ios`）修改；
+- 修改后运行 `scripts/sync_native_to_flutter.sh`，把源同步到 Flutter 副本，再把副本产生的改动一并提交；
+- 脚本提供 `--check` 模式，CI 会以该模式在每次 PR / main push 校验副本与源**逐字节一致**，漂移直接拦截，并输出修复指引；
+- `packages/xbridge-android/.../XBridgeOriginRuleSanitizer.kt` 是独立工具（死代码），**不在**同步白名单内，副本刻意不包含它。
+
+**为什么：** 若直接改 Flutter 副本、或两处各自演进，会导致 Android / iOS / Flutter 三端安全逻辑漂移（历史上曾因此出现过一次 Jenkins 构建失败与接口不一致）。
+
 ## 开发
 
 ```bash

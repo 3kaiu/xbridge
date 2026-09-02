@@ -128,6 +128,12 @@ class BridgeScriptBuilder {
   }
 
   /// Builds JS snippet to call an H5 registered handler via `__XBridgeInbound__`.
+  ///
+  /// 注意：`safeJsonEncode(request)` 生成的是一段**对象字面量**（`{...}`），
+  /// 而非 JSON 字符串。因此 `window.__XBridgeInbound__` 接收到的第一参是对象。
+  /// JS 侧消费端（xbridge-js 的 `handleRaw`/`_inboundOverride`）必须同时容忍
+  /// "JSON 字符串"与"对象字面量"两种入站形态，否则对象被 `JSON.parse` 时会
+  /// 先 ToString 成 `"[object Object]"` 而静默丢弃，导致 Flutter→H5 回调失效。
   static String buildCallH5Script(String id, String method, dynamic params) {
     final request = <String, dynamic>{
       'jsonrpc': '2.0',

@@ -157,10 +157,21 @@ class XBridgePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         // policy against a new origin or vice versa.
         val policy = securityPolicy
         val currentOrigin = origin
-        if (currentOrigin != null && !policy.allows(currentOrigin)) {
+        // 安全收紧（fail-closed + 能力级鉴权）：
+        // 1) origin 未设置（null）直接拒绝 —— 与同步 bypass 路径保持一致，
+        //    避免异步 MethodChannel 在未授权 origin 下被放行，架空原生 denyAll 兜底。
+        // 2) origin 必须通过 `allows` 的来源级校验。
+        // 3) 再通过 `isMethodAllowed` 能力级校验（publicMethods / originMethodRules），
+        //    使异步通道与同步路径具备同等的能力级 gates，而非仅判来源。
+        //    注意：Android 不具备 frame 归因（见 XBridgeSyncInterface 类 KDoc），
+        //    本路径与同步路径同样只依赖 origin + method allowlist。
+        if (currentOrigin == null ||
+            !policy.allows(currentOrigin) ||
+            !policy.isMethodAllowed(currentOrigin, method)
+        ) {
             result.error(
                 "ORIGIN_NOT_ALLOWED",
-                "Origin '$currentOrigin' is not permitted by the security policy",
+                "Origin '$currentOrigin' is not permitted by the security policy for method '$method'",
                 null,
             )
             return
