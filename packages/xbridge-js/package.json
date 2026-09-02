@@ -38,7 +38,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/**/*.test.js"
+    "test": "node --test"
   },
   "devDependencies": {
     "typescript": "^5.4.0"
