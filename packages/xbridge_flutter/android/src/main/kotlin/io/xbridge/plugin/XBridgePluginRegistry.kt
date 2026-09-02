@@ -166,7 +166,7 @@ object XBridgePluginRegistry {
      */
     fun unregister(flutterEngine: FlutterEngine) {
         plugin?.let {
-            flutterEngine.plugins.remove(it)
+            flutterEngine.plugins.remove(it.javaClass)
         }
         // Remove the JavascriptInterface from the WebView to prevent leaks.
         attachedWebView?.removeJavascriptInterface("XBridgeSync")
