@@ -277,7 +277,8 @@ class XBridgeSyncInterface(
         return when (value) {
             is Boolean, is Int, is Long, is Double, is String -> value
             is Float -> value.toDouble()
-            is Short, is Byte -> value.toInt()
+            is Short -> value.toInt()
+            is Byte -> value.toInt()
             is Char -> value.toString()
             is Map<*, *> -> {
                 val jo = org.json.JSONObject()
@@ -307,7 +308,7 @@ class XBridgeSyncInterface(
                 }
                 ja
             }
-            else -> org.json.JSONObject.valueToString(value)
+            else -> value.toString()
         }
     }
 }
