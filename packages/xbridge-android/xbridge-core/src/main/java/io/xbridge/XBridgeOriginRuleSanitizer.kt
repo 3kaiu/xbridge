@@ -3,8 +3,9 @@ package io.xbridge
 // NOTE (架构治理): 本文件是存量独立工具，属于 xbridge-android（JitPack SDK）。
 // 它既不被 xbridge_flutter 引用，也未进入 src/main/kotlin 副本的同步契约
 // （见 scripts/sync_native_to_flutter.sh 的白名单映射）。
-// 当前仓库内部无任何调用方，仅保留以兼容可能的外部 JitPack 消费者；
-// 若无外部依赖，建议在下一次大版本移除。
+// 当前仓库内部无任何调用方（flutter_yashi_ai / yashi-h5 亦无引用），
+// 保留以兼容可能的外部 JitPack 消费者。计划在下一个大版本移除。
+@Deprecated("XBridgeOriginRuleSanitizer 自 v0.1.4 起弃用，计划在下一个大版本移除。仓库内及已知宿主均无调用方。")
 /**
  * Sanitizes and validates origin rules for AndroidX `WebViewCompat.addWebMessageListener`
  * to prevent `IllegalArgumentException` caused by non-compliant origin strings.
