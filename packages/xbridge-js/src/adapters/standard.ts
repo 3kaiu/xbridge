@@ -158,6 +158,31 @@ export class StandardAdapter implements IXBridgeAdapter {
   private loggedMethods: Set<string> = new Set();
 
   /**
+   * Probe-verified availability state for the `window.XBridge.postMessage`
+   * path.
+   *
+   * Why this exists: `isAvailable()` historically only checked that
+   * `window.XBridge.postMessage` was a function. But in third-party host
+   * WebViews (e.g. a XiaoeEmbed container) that function can exist while
+   * pointing at an **unregistered** `webkit.messageHandlers.XBridge` handler —
+   * invoking it throws a synchronous `InvalidAccessError`. The result is "the
+   * bridge exists but is broken", which surfaces as a real error on the first
+   * business call instead of being treated as "no bridge".
+   *
+   * The probe resolves that discrepancy **before** any business call: we send
+   * a single harmless `__xbridge_probe__` message synchronously. If the
+   * postMessage throws `InvalidAccessError`, we permanently mark the
+   * environment as broken (`isAvailable()` → false) so callers fall through to
+   * a graceful "no bridge" branch instead of hitting the dead handler. If it
+   * succeeds (or is a no-op that doesn't throw), we treat the bridge as
+   * available and never probe again.
+   */
+  private availabilityProbeState: "unprobed" | "healthy" | "broken" = "unprobed";
+
+  /** Whether we have already transmitted the synchronous availability probe. */
+  private availabilityProbeTransmitted = false;
+
+  /**
    * Invalidate the XBridge environment sniff cache so that a late-injected
    * `window.XBridge` (e.g. after the page already constructed `XBridge`) is
    * detected on the next `XBridge` construction.
@@ -191,6 +216,57 @@ export class StandardAdapter implements IXBridgeAdapter {
     this.loggedMethods.clear();
   }
 
+  /**
+   * Probe-verified availability state (diagnostics + tests).
+   */
+  get availabilityProbe(): "unprobed" | "healthy" | "broken" {
+    return this.availabilityProbeState;
+  }
+
+  /**
+   * Send a single harmless probe message through `window.XBridge.postMessage`
+   * to determine whether the bridge is genuinely usable (not just present).
+   *
+   * `InvalidAccessError` is thrown synchronously by WKWebView when the
+   * `webkit.messageHandlers.XBridge` handler is not actually registered, so a
+   * synchronous call catches exactly the "present-but-broken" environment we
+   * want to detect before any business call touches it.
+   */
+  private probeAvailability(w: WindowWithXBridge): void {
+    if (this.availabilityProbeTransmitted) {
+      return;
+    }
+    this.availabilityProbeTransmitted = true;
+    const postFn = w.XBridge?.postMessage;
+    if (typeof postFn !== "function") {
+      // Nothing to probe — not an XBridge path (e.g. inappwebview / ready flag).
+      this.availabilityProbeState = "healthy";
+      return;
+    }
+    try {
+      // Fire-and-forget probe; no reply expected. Host handlers discard it.
+      postFn.call(
+        w.XBridge,
+        JSON.stringify({
+          jsonrpc: XBRIDGE_PROTOCOL_VERSION,
+          id: null,
+          method: "__xbridge_probe__",
+          params: {},
+        }),
+      );
+      this.availabilityProbeState = "healthy";
+    } catch (err) {
+      const errorName = err instanceof Error ? err.name : undefined;
+      if (errorName === "InvalidAccessError" || errorName === "XBridgeSendError") {
+        this.availabilityProbeState = "broken";
+      } else {
+        // Some other synchronous throw on the very first call — assume broken
+        // rather than risk surfacing it as a business-call-time error.
+        this.availabilityProbeState = "broken";
+      }
+    }
+  }
+
   isAvailable(): boolean {
     if (this.circuitState === "OPEN" && !this.canProbe()) {
       return false;
@@ -200,8 +276,25 @@ export class StandardAdapter implements IXBridgeAdapter {
       return false;
     }
     const inapp = (w as unknown as { flutter_inappwebview?: { callHandler?: unknown } }).flutter_inappwebview;
+    const hasXBridgePostMessage = typeof w.XBridge?.postMessage === "function";
+
+    // Only the `window.XBridge.postMessage` path is probe-verified. The
+    // `flutter_inappwebview` and `__xbridge_ready__` signals are injected by the
+    // host bootstrap itself and are not subject to the unregistered-handler
+    // `InvalidAccessError`, so we treat them as available directly.
+    if (hasXBridgePostMessage) {
+      this.probeAvailability(w);
+      if (this.availabilityProbeState === "broken") {
+        return false;
+      }
+      if (this.availabilityProbeState === "unprobed") {
+        // Sent the probe but didn't settle (shouldn't happen synchronously);
+        // fall through to optimistic availability.
+      }
+      return true;
+    }
+
     return (
-      typeof w.XBridge?.postMessage === "function" ||
       typeof inapp?.callHandler === "function" ||
       (w as unknown as { __xbridge_ready__?: boolean }).__xbridge_ready__ === true
     );

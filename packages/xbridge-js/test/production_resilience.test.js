@@ -451,4 +451,70 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     assert.deepEqual(calls[0], { method: "legacyMethod", args: { a: 1 } });
     bridge.dispose();
   });
+
+  test("17. Probe-verified availability: postMessage throwing InvalidAccessError marks env broken", () => {
+    // A "present-but-broken" bridge: postMessage exists but throws synchronously
+    // (WKWebView does this when the webkit.messageHandlers.XBridge handler is
+    // not actually registered in a third-party host like XiaoeEmbed).
+    globalThis.XBridge = {
+      postMessage: () => {
+        const err = new Error("The object does not support the operation or argument.");
+        err.name = "InvalidAccessError";
+        throw err;
+      },
+    };
+
+    const adapter = new StandardAdapter();
+    assert.equal(adapter.availabilityProbe, "unprobed");
+    // First isAvailable() sends the synchronous probe, catches InvalidAccessError
+    // and marks the environment broken -> returns false WITHOUT throwing.
+    assert.equal(adapter.isAvailable(), false);
+    assert.equal(adapter.availabilityProbe, "broken");
+
+    // Subsequent checks stay broken (no re-probe, no error).
+    assert.equal(adapter.isAvailable(), false);
+
+    // And the bridge reports disconnected, so callers fall through to a
+    // graceful "no bridge" branch instead of a transport error.
+    const bridge = new XBridge();
+    assert.equal(bridge.isConnected(), false);
+    bridge.dispose();
+    adapter.destroy();
+  });
+
+  test("18. Probe-verified availability: healthy postMessage marks env healthy and sends __xbridge_probe__", () => {
+    const sent = [];
+    globalThis.XBridge = {
+      postMessage: (raw) => { sent.push(JSON.parse(raw)); },
+    };
+
+    const adapter = new StandardAdapter();
+    assert.equal(adapter.isAvailable(), true);
+    assert.equal(adapter.availabilityProbe, "healthy");
+
+    // Probe transmitted exactly once, with the reserved probe method.
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].method, "__xbridge_probe__");
+    assert.equal(sent[0].id, null);
+
+    // Second check does not re-probe (transmit-once semantics).
+    adapter.isAvailable();
+    assert.equal(sent.length, 1);
+
+    const bridge = new XBridge();
+    assert.equal(bridge.isConnected(), true);
+    bridge.dispose();
+    adapter.destroy();
+  });
+
+  test("19. Probe-verified availability: non-XBridge signals (inappwebview) stay available without probe", () => {
+    // flutter_inappwebview path should remain available without a probe message.
+    globalThis.flutter_inappwebview = {
+      callHandler: () => {},
+    };
+    const adapter = new StandardAdapter();
+    assert.equal(adapter.isAvailable(), true);
+    assert.equal(adapter.availabilityProbe, "unprobed");
+    adapter.destroy();
+  });
 });
