@@ -40,6 +40,24 @@ copying**.
   incoming frame is **dropped** for that subscriber and a warning is logged —
   the accept loop is never blocked.
 
+## Performance
+
+End-to-end benchmark over a real TCP + WebSocket path (client → accept loop →
+`on_binary` → `SinkRegistry` → `DataSink` → subscriber), run on Apple Silicon
+(MBP, macOS):
+
+| 场景 | 帧大小 | 吞吐 | 备注 |
+| --- | --- | --- | --- |
+| 小帧 1KB（高帧率） | 1 KiB | **~0.97 M 帧/s · ~0.94 GB/s** | 帧率极值；默认 256-容量通道下偶发背压丢帧 |
+| 大帧 64KB（流媒体） | 64 KiB | **~59k 帧/s · ~3.7 GB/s** | 零丢帧；流媒体核心场景 |
+| 大帧 64KB × 2 订阅 | 64 KiB | **~10 万帧合计/s · ~6.1 GB/s** | fan-out clone 无有损 |
+
+复现：`cargo run --release --example ws_throughput`
+
+> 背压边界：帧率 > ~100 万/s 或订阅者消费慢于发布时，默认通道容量（256）会
+> 触发「丢帧 + warn」的设计策略——按需用 `with_sink_capacity` 调大，或改用
+> `DataSink::push`（await 背压而非丢帧）。
+
 ## Usage
 
 ### Rust API
