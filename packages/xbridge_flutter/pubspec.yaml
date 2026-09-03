@@ -1,6 +1,6 @@
 name: xbridge_flutter
 description: A generic, business-free cross-platform bridge SDK for Flutter WebView H5 integration.
-version: 0.1.4
+version: 0.1.5
 publish_to: none
 
 environment:

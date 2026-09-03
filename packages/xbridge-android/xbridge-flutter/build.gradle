@@ -5,7 +5,7 @@ apply plugin: 'kotlin-android'
 // Flutter apps get this module transitively via the Flutter plugin system.
 // It depends on :xbridge-core for the core sync/security/JNI classes.
 group = 'io.xbridge'
-version = '0.1.4'
+version = '0.1.5'
 
 android {
     namespace 'io.xbridge.flutter'

@@ -8,7 +8,7 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 group = 'io.xbridge'
-version = '0.1.0'
+version = '0.1.5'
 
 android {
     namespace 'io.xbridge'
