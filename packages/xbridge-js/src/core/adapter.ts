@@ -44,6 +44,22 @@ export interface IXBridgeAdapter {
   isAvailable(): boolean;
 
   /**
+   * Optional availability-probe verdict for transports that are present-but-
+   * maybe-broken. Returns one of:
+   * - `"unprobed"`: no probe has been sent yet (availability not yet verified).
+   * - `"healthy"`: probe succeeded — the transport is genuinely usable.
+   * - `"broken"`: probe failed (e.g. a `window.XBridge.postMessage` that throws
+   *   `InvalidAccessError` because the underlying handler was never registered,
+   *   as in third-party hosts that expose a fake handle).
+   *
+   * Callers use this instead of re-sniffing the raw global, so availability
+   * decisions stay driven by the single probe verdict rather than by manual
+   * `typeof window.XBridge?.postMessage` checks. Adapters without a probe step
+   * may omit it.
+   */
+  readonly availabilityProbe?: "unprobed" | "healthy" | "broken";
+
+  /**
    * Tear down adapter-side resources (event listeners, global handlers).
    * Optional — adapters that install no leakable resources may omit it.
    * Called by the host when the adapter is no longer needed. Must be

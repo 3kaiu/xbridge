@@ -358,15 +358,23 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     assert.equal(fired.length, 0, "dispose() rejection leaked an unhandledrejection");
   });
 
-  test("17. Probe-verified availability: postMessage throwing InvalidAccessError marks env broken", () => {
+  test("17. Probe-verified availability: postMessage throwing InvalidAccessError marks env broken, then self-heals after cooldown", () => {
     // A "present-but-broken" bridge: postMessage exists but throws synchronously
     // (WKWebView does this when the webkit.messageHandlers.XBridge handler is
     // not actually registered in a third-party host like XiaoeEmbed).
+    const originalNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+
+    let nativeReady = false;
     globalThis.XBridge = {
-      postMessage: () => {
-        const err = new Error("The object does not support the operation or argument.");
-        err.name = "InvalidAccessError";
-        throw err;
+      postMessage: (raw) => {
+        // Once the (simulated) native handler is injected, the probe succeeds.
+        if (!nativeReady) {
+          const err = new Error("The object does not support the operation or argument.");
+          err.name = "InvalidAccessError";
+          throw err;
+        }
       },
     };
 
@@ -377,15 +385,32 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     assert.equal(adapter.isAvailable(), false);
     assert.equal(adapter.availabilityProbe, "broken");
 
-    // Subsequent checks stay broken (no re-probe, no error).
+    // Before cooldown elapses, availability stays broken and does NOT re-probe.
+    now += 1000; // < 5000ms cooldown
     assert.equal(adapter.isAvailable(), false);
+    assert.equal(adapter.availabilityProbe, "broken");
 
-    // And the bridge reports disconnected, so callers fall through to a
-    // graceful "no bridge" branch instead of a transport error.
+    // Simulate the host injecting the native handler after the initial failure.
+    nativeReady = true;
+
+    // Before cooldown elapses the verdict is still broken (no re-probe fired).
+    assert.equal(adapter.isAvailable(), false);
+    assert.equal(adapter.availabilityProbe, "broken");
+
+    // After cooldown elapses, isAvailable() re-probes and sees the working
+    // transport -> the same engine self-heals to healthy.
+    now += 5000;
+    assert.equal(adapter.isAvailable(), true);
+    assert.equal(adapter.availabilityProbe, "healthy");
+
+    // A fresh healthy verdict is stable and does not re-probe again.
+
+    // And the bridge reports connected, so callers use the bridge.
     const bridge = new XBridge();
-    assert.equal(bridge.isConnected(), false);
+    assert.equal(bridge.isConnected(), true);
     bridge.dispose();
     adapter.destroy();
+    Date.now = originalNow;
   });
 
   test("18. Probe-verified availability: healthy postMessage marks env healthy and sends __xbridge_probe__", () => {

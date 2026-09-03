@@ -175,12 +175,30 @@ export class StandardAdapter implements IXBridgeAdapter {
    * environment as broken (`isAvailable()` → false) so callers fall through to
    * a graceful "no bridge" branch instead of hitting the dead handler. If it
    * succeeds (or is a no-op that doesn't throw), we treat the bridge as
-   * available and never probe again.
+   * available (or is a no-op that doesn't throw) we treat the bridge as
+   * available.
+   *
+   * A `broken` verdict is **not** permanent: it decays back to `unprobed` once
+   * [AVAILABILITY_COOLDOWN_MS] elapses, so a later `isAvailable()` re-probes.
+   * This lets the same engine self-heal when the native handler is injected
+   * after a transient early failure — mirroring (but decoupled from) the send
+   * path's circuit-breaker cooldown.
    */
   private availabilityProbeState: "unprobed" | "healthy" | "broken" = "unprobed";
 
+  /** Wall-clock timestamp (ms) of the last availability probe attempt. */
+  private availabilityProbeAt = 0;
+
   /** Whether we have already transmitted the synchronous availability probe. */
   private availabilityProbeTransmitted = false;
+
+  /**
+   * Cooldown before a `broken` availability verdict is re-probed. Independent
+   * from the send-path circuit breaker: flipping the availability verdict
+   * (whole-bridge vs no-bridge) is more consequential than a single call's
+   * success, so it cools down a little slower.
+   */
+  private static readonly AVAILABILITY_COOLDOWN_MS = 5000;
 
   /**
    * Invalidate the XBridge environment sniff cache so that a late-injected
@@ -208,12 +226,15 @@ export class StandardAdapter implements IXBridgeAdapter {
     return this.circuitState;
   }
 
-  /** Reset internal circuit-breaker state back to healthy. */
+  /** Reset internal circuit-breaker and availability-probe state back to healthy. */
   reset(): void {
     this.circuitState = "CLOSED";
     this.failureCount = 0;
     this.lastFailureTime = 0;
     this.loggedMethods.clear();
+    this.availabilityProbeState = "unprobed";
+    this.availabilityProbeTransmitted = false;
+    this.availabilityProbeAt = 0;
   }
 
   /**
@@ -231,12 +252,16 @@ export class StandardAdapter implements IXBridgeAdapter {
    * `webkit.messageHandlers.XBridge` handler is not actually registered, so a
    * synchronous call catches exactly the "present-but-broken" environment we
    * want to detect before any business call touches it.
+   *
+   * Records [availabilityProbeAt] on every attempt so `isAvailable()` can later
+   * distinguish a freshly-broken verdict from a stale one that has cooled down.
    */
   private probeAvailability(w: WindowWithXBridge): void {
     if (this.availabilityProbeTransmitted) {
       return;
     }
     this.availabilityProbeTransmitted = true;
+    this.availabilityProbeAt = Date.now();
     const postFn = w.XBridge?.postMessage;
     if (typeof postFn !== "function") {
       // Nothing to probe — not an XBridge path (e.g. inappwebview / ready flag).
@@ -283,6 +308,20 @@ export class StandardAdapter implements IXBridgeAdapter {
     // host bootstrap itself and are not subject to the unregistered-handler
     // `InvalidAccessError`, so we treat them as available directly.
     if (hasXBridgePostMessage) {
+      // A stale `broken` verdict is not permanent — once the availability
+      // cooldown has elapsed, re-arm the probe so this call re-tests the
+      // transport. This lets a single engine self-heal after a transient
+      // early failure (e.g. the native handler injected after page start).
+      if (
+        this.availabilityProbeState === "broken" &&
+        Date.now() - this.availabilityProbeAt >= StandardAdapter.AVAILABILITY_COOLDOWN_MS
+      ) {
+        this.availabilityProbeState = "unprobed";
+        // Critically, re-arm transmission too — `probeAvailability` bails out
+        // early while `availabilityProbeTransmitted` is true, so both must
+        // reset together or the re-probe never fires.
+        this.availabilityProbeTransmitted = false;
+      }
       this.probeAvailability(w);
       if (this.availabilityProbeState === "broken") {
         return false;

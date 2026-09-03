@@ -330,6 +330,27 @@ export class XBridge {
   }
 
   /**
+   * Probe verdict for the currently in-use async transport, if the transport
+   * runs an availability probe:
+   * - `"unprobed"` — no probe sent yet (availability not yet verified).
+   * - `"healthy"` — probe succeeded; the transport is genuinely usable.
+   * - `"broken"` — probe failed; the transport is present-but-not-usable
+   *   (e.g. a `window.XBridge.postMessage` that throws `InvalidAccessError`
+   *   because the underlying handler was never registered).
+   *
+   * H5 apps use this to report *why* the bridge fell back, instead of
+   * re-sniffing `typeof window.XBridge?.postMessage === "function"`. That raw
+   * presence check cannot distinguish "no bridge injected" from "a broken
+   * fake handle was injected"; the probe verdict is the single source of truth.
+   *
+   * Returns `undefined` when the active adapter performs no probe step.
+   */
+  get availabilityProbe(): "unprobed" | "healthy" | "broken" | undefined {
+    return this._adapter.availabilityProbe
+      ?? this._fallbackAdapter?.availabilityProbe;
+  }
+
+  /**
    * Whether the underlying async adapter is available in the current
    * environment. Returns `false` when no bridge transport is detected
    * (NoopAdapter) or when the StandardAdapter's `postMessage` is absent.
