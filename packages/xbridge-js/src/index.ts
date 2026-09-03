@@ -7,25 +7,22 @@
  * wrong.
  *
  * Sniff order (first match wins):
- *   1. `window.XBridge.postMessage` → StandardAdapter
- *   2. `window.XBridgeSync.callSync` → NativeSyncAdapter (sync only, async warns)
- *   3. `window.dsbridge.call`        → NativeSyncAdapter (sync only, async warns)
- *   4. none                           → NoopAdapter (warns "no bridge environment")
+ *   1. `window.XBridge.postMessage` → StandardAdapter (async JSON-RPC)
+ *   2. `flutter_inappwebview.callHandler` / `__xbridge_ready__` → StandardAdapter
+ *   3. none                           → NoopAdapter (warns "no bridge environment")
  *
- * When a native sync bridge (`XBridgeSync` or `dsbridge`) is detected but no
- * async adapter is, it is installed as the sync adapter only — `callSync`
- * works, `call` warns. This matches the brownfield reality that a pure
- * native-sync shell has sync semantics and no JSON-RPC async channel.
+ * The SDK is a pure async JSON-RPC layer: every call is `window.XBridge.postMessage`
+ * and resolves via `window.__XBridge__.resolve/reject`. No synchronous bypass or
+ * third-party legacy transport (dsbridge, XBridgeSync) is coupled in.
  */
 
-import type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
+import type { IXBridgeAdapter } from "./core/adapter.js";
 import { XBridgeCore } from "./core/bridge.js";
 import type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
 import type { XBridgeCallOptions } from "./types.js";
 import { XBridgeSendError } from "./types.js";
 import { StandardAdapter } from "./adapters/standard.js";
 import { setSniffCacheInvalidator } from "./adapters/standard.js";
-import { NativeSyncAdapter } from "./adapters/native_sync.js";
 
 // Re-export the full public surface.
 export { XBridgeCore } from "./core/bridge.js";
@@ -33,10 +30,9 @@ export type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
 export { Dispatcher, DEFAULT_TIMEOUT_MS } from "./core/dispatcher.js";
 export type { PendingRequest, TimeoutError } from "./core/dispatcher.js";
 export { generateId } from "./core/id.js";
-export type { IXBridgeAdapter, ISyncAdapter } from "./core/adapter.js";
+export type { IXBridgeAdapter } from "./core/adapter.js";
 export {
   StandardAdapter,
-  NativeSyncAdapter,
 } from "./adapters/index.js";
 export {
   XBRIDGE_PROTOCOL_VERSION,
@@ -61,8 +57,6 @@ export interface XBridgeOptions {
    * XBridgeCore will automatically and transparently failover to this adapter.
    */
   fallbackAdapter?: IXBridgeAdapter;
-  /** Force a specific sync adapter (skip env sniffing). */
-  syncAdapter?: ISyncAdapter;
 }
 
 /**
@@ -135,8 +129,6 @@ class NoopAdapter implements IXBridgeAdapter {
 interface WindowForSniff {
   XBridge?: { postMessage?: unknown };
   flutter_inappwebview?: { callHandler?: unknown };
-  dsbridge?: { call?: unknown };
-  XBridgeSync?: { callSync?: unknown };
   __xbridge_ready__?: boolean;
 }
 
@@ -160,7 +152,6 @@ function hasLiveBridge(w: WindowForSniff | undefined): boolean {
 /** Cached environment detection booleans — never store adapter instances. */
 interface SniffCache {
   hasStandard: boolean;
-  hasNativeSync: boolean;
   warned: boolean;
 }
 
@@ -188,18 +179,14 @@ function detectEnv(): SniffCache {
   // Only return cached detection if a bridge was actually found.
   // Never lock into a negative detection permanently because WebView injections
   // can complete asynchronously after initial bundle execution.
-  if (sniffCache !== null && (sniffCache.hasStandard || sniffCache.hasNativeSync)) {
+  if (sniffCache !== null && sniffCache.hasStandard) {
     return sniffCache;
   }
   const w = sniffWindow();
   const hasStandard = hasLiveBridge(w);
-  const hasNativeSync =
-    w !== undefined &&
-    (typeof w.dsbridge?.call === "function" ||
-      typeof w.XBridgeSync?.callSync === "function");
 
   const warned = false;
-  sniffCache = { hasStandard, hasNativeSync, warned };
+  sniffCache = { hasStandard, warned };
   return sniffCache;
 }
 
@@ -221,17 +208,6 @@ function pickAdapter(env: SniffCache): IXBridgeAdapter {
     return new StandardAdapter();
   }
   return new NoopAdapter();
-}
-
-/**
- * Construct a fresh sync adapter from cached env detection. Returns `undefined`
- * when no native sync bridge is available.
- */
-function pickSyncAdapter(env: SniffCache): ISyncAdapter | undefined {
-  if (env.hasNativeSync) {
-    return new NativeSyncAdapter();
-  }
-  return undefined;
 }
 
 /**
@@ -294,7 +270,6 @@ export class XBridge {
   private readonly core: XBridgeCore;
   private readonly _adapter: IXBridgeAdapter;
   private readonly _fallbackAdapter: IXBridgeAdapter | undefined;
-  private readonly _syncAdapter: ISyncAdapter | undefined;
 
   constructor(options?: XBridgeOptions) {
     const env = detectEnv();
@@ -302,23 +277,16 @@ export class XBridge {
     probeMainFrame();
     if (
       options !== undefined &&
-      (options.adapter !== undefined ||
-        options.syncAdapter !== undefined ||
-        options.fallbackAdapter !== undefined)
+      (options.adapter !== undefined || options.fallbackAdapter !== undefined)
     ) {
-      // Manual override: use the explicitly provided adapter(s). If only the
-      // async adapter is overridden, re-detect the sync adapter fresh (don't
-      // reuse a cached sync adapter instance which may be stale).
+      // Manual override: use the explicitly provided adapter(s).
       this._adapter = options.adapter ?? pickAdapter(env);
       this._fallbackAdapter = options.fallbackAdapter;
-      this._syncAdapter =
-        options.syncAdapter !== undefined ? options.syncAdapter : pickSyncAdapter(env);
     } else {
       this._adapter = pickAdapter(env);
       this._fallbackAdapter = undefined;
-      this._syncAdapter = pickSyncAdapter(env);
     }
-    this.core = new XBridgeCore(this._adapter, this._syncAdapter, this._fallbackAdapter);
+    this.core = new XBridgeCore(this._adapter, this._fallbackAdapter);
   }
 
   /** The async adapter currently in use. */
@@ -329,11 +297,6 @@ export class XBridge {
   /** The fallback adapter, if any. */
   getFallbackAdapter(): IXBridgeAdapter | undefined {
     return this._fallbackAdapter;
-  }
-
-  /** The sync adapter, if any. */
-  getSyncAdapter(): ISyncAdapter | undefined {
-    return this._syncAdapter;
   }
 
   /**
@@ -349,11 +312,6 @@ export class XBridge {
   /** Async RPC. @see {@link XBridgeCore.call}. */
   call(method: string, params?: unknown, options?: XBridgeCallOptions): Promise<unknown> {
     return this.core.call(method, params, options);
-  }
-
-  /** Sync bypass. @see {@link XBridgeCore.callSync}. */
-  callSync(method: string, params?: unknown): unknown {
-    return this.core.callSync(method, params);
   }
 
   /** Subscribe to host-pushed events. @see {@link XBridgeCore.onEvent}. */

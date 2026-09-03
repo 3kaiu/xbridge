@@ -12,7 +12,7 @@
  * Promise resolver.
  */
 
-import type { IXBridgeAdapter, ISyncAdapter } from "./adapter.js";
+import type { IXBridgeAdapter } from "./adapter.js";
 import { DEFAULT_TIMEOUT_MS, Dispatcher } from "./dispatcher.js";
 import { generateId } from "./id.js";
 import type {
@@ -61,7 +61,6 @@ export class XBridgeCore {
   private readonly handlers: Map<string, XBridgeHandler> = new Map();
   private readonly adapter: IXBridgeAdapter;
   private readonly fallbackAdapter?: IXBridgeAdapter;
-  private readonly syncAdapter: ISyncAdapter | undefined;
   private messageHandlerBound = false;
   private readonly pendingReadyCleanups: Set<() => void> = new Set();
   private readonly pendingReadyRejects: Set<(err: Error) => void> = new Set();
@@ -69,11 +68,9 @@ export class XBridgeCore {
 
   constructor(
     adapter: IXBridgeAdapter,
-    syncAdapter?: ISyncAdapter,
     fallbackAdapter?: IXBridgeAdapter,
   ) {
     this.adapter = adapter;
-    this.syncAdapter = syncAdapter;
     this.fallbackAdapter = fallbackAdapter;
     this.installInboundHandler();
   }
@@ -91,11 +88,6 @@ export class XBridgeCore {
   /** The fallback async adapter, if any. */
   getFallbackAdapter(): IXBridgeAdapter | undefined {
     return this.fallbackAdapter;
-  }
-
-  /** The sync adapter, if any. */
-  getSyncAdapter(): ISyncAdapter | undefined {
-    return this.syncAdapter;
   }
 
   /**
@@ -323,52 +315,6 @@ export class XBridgeCore {
       }
     });
     return pendingPromise;
-  }
-
-  /**
-   * Synchronously invoke `method`. Routes to the sync adapter when present;
-   * otherwise warns and returns `undefined` (PRD §P1). If the native side
-   * returns a structured error envelope `{"error":{code,message}}`, the
-   * error is thrown so callers can distinguish errors from `undefined` returns.
-   */
-  callSync(method: string, params?: unknown): unknown {
-    if (this.syncAdapter === undefined || !this.syncAdapter.isAvailable()) {
-      if (typeof console !== "undefined") {
-        console.warn(
-          `[XBridge] callSync('${method}') is not supported in this environment (no sync adapter); returning undefined.`,
-        );
-      }
-      return undefined;
-    }
-    try {
-      const result = this.syncAdapter.callSync(method, params);
-      // Check if the result is a structured error envelope from the native side.
-      // Android returns {"error": {"code": "...", "message": "..."}} on failure.
-      if (
-        result !== null &&
-        typeof result === "object" &&
-        typeof (result as Record<string, unknown>).error === "object" &&
-        (result as Record<string, unknown>).error !== null
-      ) {
-        const errObj = (result as Record<string, { code?: unknown; message?: unknown }>).error;
-        const error = new Error(
-          `[XBridge] callSync('${method}') failed: ${errObj.message ?? "unknown error"}`,
-        );
-        (error as { code?: unknown }).code = errObj.code;
-        throw error;
-      }
-      return result;
-    } catch (err) {
-      // Re-throw errors that we constructed from a structured error envelope.
-      if (err instanceof Error && err.message.startsWith("[XBridge] callSync('")) {
-        throw err;
-      }
-      // Native adapter threw — re-throw so the caller can handle it.
-      if (typeof console !== "undefined") {
-        console.warn(`[XBridge] callSync('${method}') threw:`, err);
-      }
-      throw err;
-    }
   }
 
   /**

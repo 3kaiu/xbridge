@@ -57,24 +57,3 @@ export interface IXBridgeAdapter {
    */
   reset?(): void;
 }
-
-/**
- * Sync adapter — a synchronous bypass channel (e.g. a native sync bridge that
- * detects `window.dsbridge`, or a native `@JavascriptInterface` object). Calls
- * return immediately; there is no correlation id and no Promise. Used by
- * {@link XBridgeCore.callSync}.
- *
- * Per PRD §P1 / audit Risk 1: Flutter channels are strictly async, so a sync
- * adapter is optional. When absent, `callSync` degrades to a warning + null.
- */
-export interface ISyncAdapter {
-  readonly name: string;
-
-  /**
-   * Synchronously invoke `method` on the host and return its value. Returning
-   * `undefined` is indistinguishable from "no value"; callers must tolerate it.
-   */
-  callSync(method: string, params?: unknown): unknown;
-
-  isAvailable(): boolean;
-}

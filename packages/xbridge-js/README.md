@@ -1,9 +1,10 @@
 # xbridge-js
 
-Open-source, zero-business-coupling H5 bridge SDK. Implements a JSON-RPC 2.0
-variant protocol with a universal `StandardAdapter` for any container that
-injects `window.XBridge.postMessage`, plus a sync bypass adapter for
-`window.dsbridge.call`.
+Open-source, zero-business-coupling H5 bridge SDK. Implements a pure async
+JSON-RPC 2.0 variant protocol over `window.XBridge.postMessage`, with a
+universal `StandardAdapter` for any container (Flutter webview_flutter, native
+shells) that injects `window.XBridge`. No synchronous bypass and no third-party
+legacy transport (dsbridge, XBridgeSync) is coupled in.
 
 ## Install
 
@@ -25,9 +26,6 @@ const info = await bridge.call("getDeviceInfo");
 
 // Fire-and-forget (no id, no response expected)
 await bridge.call("logEvent", { foo: 1 }, { noCallback: true });
-
-// Sync bypass — only when a sync adapter (e.g. your existing native bridge) is present
-const version = bridge.callSync("getAppVersion");
 
 // Subscribe to host-pushed events
 const off = bridge.onEvent("onNetworkChange", (params) => {
@@ -75,7 +73,7 @@ The constructor probes `window` once (cached) and picks the first available
 adapter:
 
 1. `window.XBridge.postMessage` → `StandardAdapter` (async, bidirectional)
-2. `window.dsbridge.call` → `NativeSyncAdapter` (sync only; `call()` warns)
+2. `flutter_inappwebview.callHandler` / `__xbridge_ready__` → `StandardAdapter`
 3. none → `NoopAdapter` (warns "no bridge environment")
 
 Override explicitly when you need to force a transport, e.g. for tests:
@@ -91,7 +89,6 @@ const bridge = new XBridge({ adapter: new StandardAdapter() });
 | Adapter | Transport | Direction |
 | --- | --- | --- |
 | `StandardAdapter` | `window.XBridge.postMessage(str)` | async bidirectional via `window.__XBridge__.resolve/reject` + `window.__XBridgeInbound__` + `XBridgeEvent` |
-| `NativeSyncAdapter` | `window.dsbridge.call(method, args)` | sync only (returns value directly) |
 
 `StandardAdapter` installs global overrides that route host → H5 messages
 into the core. The overrides are re-installed lazily on each `send()` call,

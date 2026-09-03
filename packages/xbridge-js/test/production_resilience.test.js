@@ -13,8 +13,6 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
   let originalGlobalXBridge;
   let originalGlobalInapp;
   let originalGlobalReady;
-  let originalGlobalXBridgeSync;
-  let originalGlobalDsbridge;
 
   const safeDeleteGlobals = () => {
     try { delete globalThis.XBridge; } catch {}
@@ -23,8 +21,6 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     try { delete globalThis.__XBridge__; } catch {}
     try { delete globalThis.__XBridgeInbound__; } catch {}
     try { delete globalThis.__xbridge_initialized__; } catch {}
-    try { delete globalThis.XBridgeSync; } catch {}
-    try { delete globalThis.dsbridge; } catch {}
   };
 
   beforeEach(() => {
@@ -32,8 +28,6 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     originalGlobalXBridge = globalThis.XBridge;
     originalGlobalInapp = globalThis.flutter_inappwebview;
     originalGlobalReady = globalThis.__xbridge_ready__;
-    originalGlobalXBridgeSync = globalThis.XBridgeSync;
-    originalGlobalDsbridge = globalThis.dsbridge;
     safeDeleteGlobals();
   });
 
@@ -47,12 +41,6 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     }
     if (originalGlobalReady !== undefined) {
       globalThis.__xbridge_ready__ = originalGlobalReady;
-    }
-    if (originalGlobalXBridgeSync !== undefined) {
-      globalThis.XBridgeSync = originalGlobalXBridgeSync;
-    }
-    if (originalGlobalDsbridge !== undefined) {
-      globalThis.dsbridge = originalGlobalDsbridge;
     }
     resetSniffCache();
   });
@@ -368,88 +356,6 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
       process.off("unhandledRejection", onUnhandled);
     }
     assert.equal(fired.length, 0, "dispose() rejection leaked an unhandledrejection");
-  });
-
-  test("13. callSync routes to Android XBridgeSync and unwraps the result envelope (M1)", () => {
-    // Android `@JavascriptInterface` exposes a genuinely synchronous
-    // `XBridgeSync.callSync(method, paramsJson)` returning a JSON envelope string.
-    const calls = [];
-    globalThis.XBridgeSync = {
-      callSync: (method, paramsJson) => {
-        calls.push({ method, paramsJson });
-        return JSON.stringify({ result: { token: "sync_token_1" } });
-      },
-    };
-    const bridge = new XBridge();
-    const res = bridge.callSync("getToken");
-    assert.deepEqual(res, { token: "sync_token_1" });
-    // Params were encoded to a JSON string for the @JavascriptInterface.
-    assert.equal(calls[0].method, "getToken");
-    assert.equal(calls[0].paramsJson, "");
-    bridge.dispose();
-  });
-
-  test("14. callSync encodes params and throws on an Android XBridgeSync error envelope (M1)", () => {
-    const calls = [];
-    globalThis.XBridgeSync = {
-      callSync: (method, paramsJson) => {
-        calls.push(paramsJson);
-        return JSON.stringify({
-          error: { code: "NO_NATIVE_BRIDGE", message: "XBridgeNativeBridge not set" },
-        });
-      },
-    };
-    const bridge = new XBridge();
-
-    // Error envelope → core.callSync throws with code attached.
-    assert.throws(() => bridge.callSync("doThing", { x: 1 }), (e) => {
-      assert.equal(e.code, "NO_NATIVE_BRIDGE");
-      assert.ok(e.message.includes("XBridgeNativeBridge not set"));
-      return true;
-    });
-
-    // Params object was JSON-encoded → string "{"x":1}".
-    assert.equal(JSON.parse(calls[0]).x, 1);
-    bridge.dispose();
-  });
-
-  test("15. iOS XBridgeSync (async Promise) degrades gracefully with a warning (M1)", () => {
-    // iOS WKWebView delivers script messages asynchronously, so its
-    // `XBridgeSync.callSync` returns a Promise, which a synchronous adapter
-    // cannot consume. It must warn and return undefined, not a dangling Promise.
-    globalThis.XBridgeSync = {
-      callSync: () => Promise.resolve({ result: "should-not-be-returned" }),
-    };
-    const warnings = [];
-    const origWarn = console.warn;
-    console.warn = (msg) => { warnings.push(msg); };
-    try {
-      const bridge = new XBridge();
-      const res = bridge.callSync("asyncOnly", {});
-      assert.equal(res, undefined);
-      assert.ok(
-        warnings.some((w) => typeof w === "string" && w.includes("asynchronous")),
-        "expected a warning guiding callers to the async channel",
-      );
-      bridge.dispose();
-    } finally {
-      console.warn = origWarn;
-    }
-  });
-
-  test("16. legacy dsbridge still routes through callSync when XBridgeSync is absent", () => {
-    const calls = [];
-    globalThis.dsbridge = {
-      call: (method, args) => {
-        calls.push({ method, args });
-        return { value: 42 };
-      },
-    };
-    const bridge = new XBridge();
-    const res = bridge.callSync("legacyMethod", { a: 1 });
-    assert.deepEqual(res, { value: 42 });
-    assert.deepEqual(calls[0], { method: "legacyMethod", args: { a: 1 } });
-    bridge.dispose();
   });
 
   test("17. Probe-verified availability: postMessage throwing InvalidAccessError marks env broken", () => {
