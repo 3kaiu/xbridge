@@ -2,8 +2,12 @@
 
 Native Android (Kotlin) bridge SDK. Two modules:
 
-- **`xbridge-core`** — pure Kotlin, zero Flutter dependency. Sync bypass, security policy, JNI bridge.
+- **`xbridge-core`** — pure Kotlin, zero Flutter dependency. Security policy, JNI bridge.
 - **`xbridge-flutter`** — Flutter plugin glue (`FlutterPlugin`, `MethodChannel`).
+
+The bridge is strictly async JSON-RPC: H5 calls flow
+`window.XBridge.postMessage` → JavaScriptChannel → Dart method handler →
+this native bridge. No synchronous `@JavascriptInterface` bypass.
 
 ## Installation
 
@@ -16,7 +20,7 @@ Add `xbridge_flutter` to your `pubspec.yaml` — the Android native code is bund
 ```groovy
 // build.gradle
 dependencies {
-    implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.0'
+    implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.5'
 }
 ```
 
@@ -25,23 +29,12 @@ dependencies {
 ## Usage (pure native, no Flutter)
 
 ```kotlin
-// 1. Implement the bridge delegate
+// Implement the bridge delegate
 class YourBridgeAdapter : XBridgeNativeBridge {
     override fun invoke(method: String, params: Any?): Any? {
         return existingBridge.callHandler(method, params)
     }
 }
-
-// 2. Attach sync bypass to WebView
-val syncInterface = XBridgeSyncInterface(
-    nativeBridgeProvider = { YourBridgeAdapter() },
-    securityPolicyProvider = { XBridgeSecurityPolicy.allowlist(setOf("https://app.example.com")) },
-    originProvider = { webView.url },
-)
-syncInterface.attach(webView)
-
-// 3. H5 calls sync bypass
-// window.XBridgeSync.callSync('getAppInfo', '{}')
 ```
 
 ## Usage (with Flutter)
@@ -51,7 +44,6 @@ syncInterface.attach(webView)
 XBridgePluginRegistry.register(
     flutterEngine = flutterEngine,
     nativeBridge = YourBridgeAdapter(),
-    webView = webView,
 )
 ```
 

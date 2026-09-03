@@ -1,25 +1,26 @@
 # XBridge
 
-通用、开源、零业务耦合的跨端桥接 SDK。H5 / Flutter / Native 三层各自独立可用，不强制依赖其他层。
+**English** | [简体中文](README_ZH.md)
 
-## 架构
+A generic, open-source, business-free cross-platform bridge SDK — one protocol across **H5 / Flutter / Native**, with each layer usable independently and no hard dependency on the others.
 
-```
-┌───────────────────────────────────────┐
-│  H5 层 (xbridge-js)                    │  npm 包
-├───────────────────────────────────────┤
-│  Flutter 层 (xbridge_flutter)          │  git 依赖，含 Android/iOS 原生代码
-├───────────────────────────────────────┤
-│  Native 层                             │
-│  ├ Android (xbridge-android)           │  JitPack AAR
-│  ├ iOS (xbridge-ios)                   │  CocoaPods
-│  └ Rust core (xbridge_core)            │  build-time 源码依赖 / C-ABI
-└───────────────────────────────────────┘
-```
+[![JS SDK CI](https://github.com/3kaiu/xbridge/actions/workflows/js.yml/badge.svg)](https://github.com/3kaiu/xbridge/actions/workflows/js.yml)
+[![Flutter SDK CI](https://github.com/3kaiu/xbridge/actions/workflows/flutter.yml/badge.svg)](https://github.com/3kaiu/xbridge/actions/workflows/flutter.yml)
+[![Rust Core CI](https://github.com/3kaiu/xbridge/actions/workflows/rust.yml/badge.svg)](https://github.com/3kaiu/xbridge/actions/workflows/rust.yml)
+[![Native Sync Check](https://github.com/3kaiu/xbridge/actions/workflows/native-sync-check.yml/badge.svg)](https://github.com/3kaiu/xbridge/actions/workflows/native-sync-check.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
 
-## 安装与最小示例
+## Features
 
-### H5（npm）
+- **Independent layers** — H5 / Flutter / Native each integrate on their own; degraded automatically when no bridge is present (`use it when available, treat as no-bridge otherwise`).
+- **Pure async JSON-RPC** — unified as a strictly async protocol since v0.1.4; the sync bypass channel has been removed.
+- **Self-healing availability** — a probe detects a broken `postMessage` environment and automatically recalls once injection lands (v0.1.5).
+- **High-volume media passthrough** — local WebSocket, full-duplex, zero-serialization, for ArrayBuffer streams.
+- **Defense in depth** — origin allowlist validation; the native layer and its Flutter copy stay **byte-identical** (single source of truth), preventing security logic drift across the three platforms.
+
+## Quick Start
+
+### H5 — npm
 
 ```bash
 pnpm add @3kaiu/xbridge-js
@@ -28,142 +29,138 @@ pnpm add @3kaiu/xbridge-js
 ```typescript
 import { XBridge } from '@3kaiu/xbridge-js'
 const bridge = new XBridge()
-const token = await bridge.call('getToken')
+const token = await bridge.call('getToken')        // common: wait for readiness before calling
 ```
 
-Flutter 适配器在 attach 及每次导航时幂等注入统一 bootstrap（含 `postMessage` 自动 polyfill + `XBridgeReady` 就绪握手）。若 H5 先于注入执行（如预渲染/首屏抢跑），用 `ready()` 等待就绪后再调用：
+If the H5 page runs before the bridge is injected (prerender / first-frame race), wait with `ready()`:
 
 ```typescript
 try {
-  await bridge.ready() // resolve = 就绪；超时/无桥 reject
+  await bridge.ready()                             // resolve = ready; rejects on timeout / no bridge
   const safeArea = await bridge.call('getSafeArea')
-}
-catch {
-  // 非 App 容器或超时，走 fallback
-}
+} catch { /* not an App container or timeout → fallback */ }
 ```
 
-### Flutter（git 依赖）
+### Flutter — git dependency
 
 ```yaml
 # pubspec.yaml
 dependencies:
   xbridge_flutter:
-    git:
-      url: https://github.com/3kaiu/xbridge.git
-      path: packages/xbridge_flutter
-      ref: v0.1.3
+    git: { url: https://github.com/3kaiu/xbridge.git, path: packages/xbridge_flutter, ref: v0.1.5 }
 ```
 
 ```dart
 final bridge = BridgeController()..attachWebViewController(controller);
-bridge.addHandler('getToken', (ctx, params) => sessionService.token);
+bridge.addHandler('getToken', (ctx, params) => sessionService.token);   // register an H5 call
 ```
 
-Android/iOS 原生代码随 Flutter plugin 自动包含，零配置。
+Android / iOS native code ships with the Flutter plugin automatically — zero config.
 
-### Android（JitPack）
+### Android — JitPack
 
 ```groovy
-implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.3'
+implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.5'
 ```
+
+Standalone consumers use its security / fallback capabilities (the WebView-mounting `XBridgeSyncInterface` was removed in 0.1.4):
 
 ```kotlin
-val syncInterface = XBridgeSyncInterface(
-    nativeBridgeProvider = { myBridge },
-    securityPolicyProvider = { XBridgeSecurityPolicy.allowlist(setOf("https://app.example.com")) },
-    originProvider = { webView.url },
-)
-syncInterface.attach(webView)
+val nativeBridge = XBridgeNativeBridge()          // Native → H5 outbound call (fallback)
+val policy = XBridgeSecurityPolicy.allowlist(setOf("https://app.example.com"))
 ```
 
-### iOS（CocoaPods）
+### iOS — CocoaPods
 
 ```ruby
-pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => 'v0.1.3'
+pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => 'v0.1.5'
 ```
 
 ```swift
-let syncHandler = XBridgeSyncHandler()
-syncHandler.nativeBridge = MyNativeBridge()
-syncHandler.securityPolicy = .allowlist(["https://app.example.com"])
-syncHandler.attach(to: webView)
+let nativeBridge = XBridgeNativeBridge()
+let policy = XBridgeSecurityPolicy.allowlist(["https://app.example.com"])
 ```
 
-### Rust（build-time 依赖）
+### Rust — build-time dependency
 
-由原生层从源码构建（`rust/xbridge_core`），或使用 CI 提供的预编译二进制，不发布到任何 registry。
+Built from source by the native layer (`rust/xbridge_core`), or consumed via CI-prebuilt binaries; not published to any registry.
 
-## 三态通道
+## Architecture
 
-| 通道 | 用途 | 特性 |
+```mermaid
+flowchart TB
+    subgraph H5["H5 layer · xbridge-js"]
+        direction LR
+        JS["XBridge API<br/>npm package"]
+    end
+    subgraph FL["Flutter layer · xbridge_flutter"]
+        direction LR
+        CTL["BridgeController<br/>git dep, incl. Android/iOS native"]
+    end
+    subgraph NT["Native layer"]
+        direction LR
+        AND["Android<br/>xbridge-android · JitPack AAR"]
+        IOS["iOS<br/>xbridge-ios · CocoaPods"]
+        RUST["Rust core<br/>xbridge_core · build-time / C-ABI"]
+    end
+    JS <-->|"Async Bridge<br/>JSON-RPC"| CTL
+    CTL <-->|"Flutter Channel"| AND
+    CTL <-->|"Flutter Channel"| IOS
+    AND <==>|"C-ABI"| RUST
+    IOS <==>|"C-ABI"| RUST
+    JS <-->|"Local WS Server<br/>ArrayBuffer full-duplex"| RUST
+    classDef layer fill:#f6f8fa,stroke:#24292f,stroke-width:2px;
+    class H5,FL,NT layer;
+```
+
+### Channels
+
+| Channel | Purpose | Characteristics |
 | --- | --- | --- |
-| Async Bridge | 常规 JSON-RPC 请求-响应 | 跨 Flutter Channel，绝对异步 |
-| Sync Bypass | 纯同步调用（`callSync`） | 走 Native `@JavascriptInterface` / WKScriptMessageHandler 直连 |
-| Local WS Server | 大体积多媒体流 | H5 ↔ 本地 WS，ArrayBuffer 全双工，零序列化 |
+| Async Bridge | Regular JSON-RPC request/response | Across Flutter Channel, strictly async |
+| Local WS Server | High-volume media streams | H5 ↔ local WS, ArrayBuffer full-duplex, zero serialization |
 
-## 包结构
+## Package Matrix
 
-| 包 | 分发方式 | 依赖 Flutter？ |
+| Package | Distribution | Depends on Flutter? |
 | --- | --- | --- |
 | xbridge-js | npm | ❌ |
-| xbridge_flutter | git 依赖 | ✅ |
-| xbridge_protocol | git 依赖 (纯 Dart) | ❌ |
-| xbridge_platform_interface | git 依赖 | ✅ |
+| xbridge_flutter | git dependency | ✅ |
+| xbridge_protocol | git dependency (pure Dart) | ❌ |
+| xbridge_platform_interface | git dependency | ✅ |
 | xbridge-android | JitPack | ❌ (Core) / ✅ (Flutter) |
 | xbridge-ios | CocoaPods | ❌ (Core) / ✅ (Flutter) |
-| xbridge_core | build-time 源码 / 预编译二进制 | ❌ |
+| xbridge_core | build-time source / prebuilt binary | ❌ |
 
-全部包位于 `packages/`（Flutter/Android/iOS/JS）与 `rust/xbridge_core`。
+Source lives in `packages/` (Flutter / Android / iOS / JS) and `rust/xbridge_core`.
 
-### 原生代码「单一事实源」约定（务必阅读）
+## Contributing
 
-原生层与 Flutter 层内容相同的原生能力，当前以**两份源码**形式共存：
-
-| 唯一事实源（在此修改） | 同步副本（勿直接改逻辑） |
-| --- | --- |
-| `packages/xbridge-android/`（JitPack SDK） | `packages/xbridge_flutter/android/`（Flutter plugin 原生目录） |
-| `packages/xbridge-ios/`（CocoaPods SDK） | `packages/xbridge_flutter/ios/`（Flutter plugin 原生目录） |
-
-**规则：**
-- Android/iOS 原生逻辑一律在**唯一事实源**（`xbridge-android` / `xbridge-ios`）修改；
-- 修改后运行 `scripts/sync_native_to_flutter.sh`，把源同步到 Flutter 副本，再把副本产生的改动一并提交；
-- 脚本提供 `--check` 模式，CI 会以该模式在每次 PR / main push 校验副本与源**逐字节一致**，漂移直接拦截，并输出修复指引；
-- `packages/xbridge-android/.../XBridgeOriginRuleSanitizer.kt` 是独立工具（死代码），**不在**同步白名单内，副本刻意不包含它。
-
-**为什么：** 若直接改 Flutter 副本、或两处各自演进，会导致 Android / iOS / Flutter 三端安全逻辑漂移（历史上曾因此出现过一次 Jenkins 构建失败与接口不一致）。
-
-## 开发
+**Single source of truth (please read)**: Android / iOS native logic is modified only at `packages/xbridge-android` / `packages/xbridge-ios`, then synced to the Flutter copy with `scripts/sync_native_to_flutter.sh`. CI runs `--check` on every PR / push to verify the copy is **byte-identical** to the source; any drift is rejected. This is why security logic stays consistent across all three platforms (two independent copies once caused a build failure and interface mismatch).
 
 ```bash
 # JS
 cd packages/xbridge-js && npm install && npm run build
-
 # Flutter
 cd packages/xbridge_flutter && flutter pub get && dart analyze
-
 # Rust
 cd rust/xbridge_core && cargo test
-
 # Android
 cd packages/xbridge-android && ./gradlew :xbridge-core:build
-
-# iOS (需 pod install + xcodebuild)
+# iOS (requires pod install + xcodebuild)
 ```
 
-## 发布
+## Releasing
 
-推送 `v*` tag 触发 GitHub Actions 自动发布：
+Pushing a `v*` tag triggers automated releases via GitHub Actions (the latest tag is the single source of truth for the version, bumped uniformly with `scripts/version.sh`):
 
 ```bash
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.5
+git push origin v0.1.5
 ```
 
-- npm 自动 publish（需配置 `NPM_TOKEN` secret）
-- JitPack 自动监听 tag 构建 AAR
-- GitHub Release 自动创建，带安装说明
+- npm auto-publishes; JitPack auto-builds the AAR; a GitHub Release with install instructions is auto-created.
 
-## 许可
+## License
 
 MIT
