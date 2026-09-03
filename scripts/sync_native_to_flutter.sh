@@ -42,13 +42,12 @@ esac
 # ---------------------------------------------------------------------------
 # Android：xbridge-android（源）-> xbridge_flutter/android（副本）
 #   xbridge-flutter 模块：Flutter 插件 glue（XBridgePlugin / PluginRegistry）
-#   xbridge-core 模块：纯 Kotlin 核心（SyncInterface / NativeBridge / SecurityPolicy / WS JNI）
+#   xbridge-core 模块：纯 Kotlin 核心（NativeBridge / SecurityPolicy / WS JNI）
 ANDROID_MAP=(
   "packages/xbridge-android/xbridge-flutter/src/main/java/io/xbridge/XBridgePlugin.kt|packages/xbridge_flutter/android/src/main/kotlin/io/xbridge/XBridgePlugin.kt"
   "packages/xbridge-android/xbridge-flutter/src/main/java/io/xbridge/plugin/XBridgePluginRegistry.kt|packages/xbridge_flutter/android/src/main/kotlin/io/xbridge/plugin/XBridgePluginRegistry.kt"
   "packages/xbridge-android/xbridge-core/src/main/java/io/xbridge/XBridgeNativeBridge.kt|packages/xbridge_flutter/android/src/main/kotlin/io/xbridge/XBridgeNativeBridge.kt"
   "packages/xbridge-android/xbridge-core/src/main/java/io/xbridge/XBridgeSecurityPolicy.kt|packages/xbridge_flutter/android/src/main/kotlin/io/xbridge/XBridgeSecurityPolicy.kt"
-  "packages/xbridge-android/xbridge-core/src/main/java/io/xbridge/XBridgeSyncInterface.kt|packages/xbridge_flutter/android/src/main/kotlin/io/xbridge/XBridgeSyncInterface.kt"
   "packages/xbridge-android/xbridge-core/src/main/java/io/xbridge/ws/LocalWsServerJni.kt|packages/xbridge_flutter/android/src/main/kotlin/io/xbridge/ws/LocalWsServerJni.kt"
 )
 
@@ -60,7 +59,6 @@ IOS_MAP=(
   "packages/xbridge-ios/Sources/XBridgeiOS/WebSocket/xbridge_core.h|packages/xbridge_flutter/ios/Classes/WebSocket/xbridge_core.h"
   "packages/xbridge-ios/Sources/XBridgeiOS/XBridgeNativeBridge.swift|packages/xbridge_flutter/ios/Classes/XBridgeNativeBridge.swift"
   "packages/xbridge-ios/Sources/XBridgeiOS/XBridgePlugin.swift|packages/xbridge_flutter/ios/Classes/XBridgePlugin.swift"
-  "packages/xbridge-ios/Sources/XBridgeiOS/XBridgeSyncHandler.swift|packages/xbridge_flutter/ios/Classes/XBridgeSyncHandler.swift"
 )
 
 # 副本刻意不包含的源文件（死代码 / 独立分发专用），用于漏同步检测时报例外。
@@ -87,8 +85,23 @@ sync_one() {
   local abs_src="$REPO_ROOT/$rel_src"
 
   if [ ! -f "$abs_src" ]; then
-    echo "[ERROR] 源文件缺失: $rel_src" >&2
-    fail=1
+    if [ -f "$abs_dst" ]; then
+      # 源已被删除但副本残留 → 孤儿副本：同步模式自动删除，check 模式报错，防止
+      # 「删了源却留下副本」的漂移。删除传播是同步契约的一部分。
+      if [ "$CHECK_MODE" = "1" ]; then
+        echo "[ERROR] 源已删除但副本残留(孤儿): $rel_src -> $abs_dst" >&2
+        echo "      请运行: scripts/sync_native_to_flutter.sh 以删除孤儿副本" >&2
+        fail=1
+      else
+        rm -f "$abs_dst"
+        echo "[RM] 删除孤儿副本: $abs_dst"
+      fi
+    else
+      # 源与副本均不存在：映射表条目指向已删除文件，说明该条目应从映射表移除。
+      echo "[ERROR] 映射表条目指向已删除文件: $rel_src"
+      echo "      请在 scripts/sync_native_to_flutter.sh 移除该条目（源与副本均已删除）" >&2
+      fail=1
+    fi
     return
   fi
 

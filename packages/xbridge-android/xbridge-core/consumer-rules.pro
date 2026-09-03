@@ -8,13 +8,6 @@
 # Keep all public classes in io.xbridge — they form the SDK's API surface.
 -keep public class io.xbridge.** { public *; }
 
-# ── Keep @JavascriptInterface methods ─────────────────────────────────────────
-# Android's JS bridge uses reflection to discover @JavascriptInterface methods.
-# ProGuard may strip them otherwise.
--keepclassmembers class io.xbridge.XBridgeSyncInterface {
-    @android.webkit.JavascriptInterface <methods>;
-}
-
 # ── Keep JNI external declarations ────────────────────────────────────────────
 # Native methods are called by name from JNI; do not let ProGuard rename them.
 -keepclasseswithmembernames class io.xbridge.ws.LocalWsServerJni {

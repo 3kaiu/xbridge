@@ -1,11 +1,9 @@
 package io.xbridge.plugin
 
-import android.webkit.WebView
 import io.flutter.embedding.engine.FlutterEngine
 import io.xbridge.XBridgeNativeBridge
 import io.xbridge.XBridgePlugin
 import io.xbridge.XBridgeSecurityPolicy
-import io.xbridge.XBridgeSyncInterface
 
 /**
  * One-call registration helper for the host app's `MainActivity`.
@@ -18,7 +16,6 @@ import io.xbridge.XBridgeSyncInterface
  *     XBridgePluginRegistry.register(
  *         flutterEngine = flutterEngine,
  *         nativeBridge = YourBridgeAdapter(existingBridge), // app-provided
- *         webView = webView,
  *     )
  * }
  * ```
@@ -30,13 +27,15 @@ import io.xbridge.XBridgeSyncInterface
  * **Note**: This registry holds a static reference to the [XBridgePlugin].
  * If the host app destroys and recreates the Flutter engine (e.g. on
  * configuration change), call [unregister] first, then [register] again.
+ *
+ * The bridge is strictly async JSON-RPC. H5 calls flow
+ * `window.XBridge.postMessage` → JavaScriptChannel → Dart method handler →
+ * this native bridge. No synchronous `@JavascriptInterface` bypass is used.
  */
 object XBridgePluginRegistry {
 
     @Volatile
     private var plugin: XBridgePlugin? = null
-    @Volatile
-    private var syncInterface: XBridgeSyncInterface? = null
     @Volatile
     private var currentBridge: XBridgeNativeBridge? = null
     @Volatile
@@ -45,21 +44,14 @@ object XBridgePluginRegistry {
     private var currentOrigin: String? = null
     @Volatile
     private var attachedEngine: FlutterEngine? = null
-    @Volatile
-    private var attachedWebView: WebView? = null
 
     /**
-     * Register the XBridge plugin and (optionally) the sync bypass interface.
+     * Register the XBridge plugin.
      *
      * @param flutterEngine The Flutter engine to attach to.
      * @param nativeBridge  The app's delegate that forwards to the legacy
      *                      native bridge (e.g. your existing native bridge). May be `null` if
      *                      the app sets it later via [updateNativeBridge].
-     * @param webView       Optional WebView to inject the `XBridgeSync`
-     *                      `@JavascriptInterface` into. Pass `null` if the
-     *                      sync bypass is not needed or the WebView is not
-     *                      yet available — you can call [attachSyncInterface]
-     *                      later once the WebView is ready.
      * @param securityPolicy Initial security policy. Defaults to **deny-all**
      *                      for production safety; set `allowAll()` for development
      *                      or an allowlist for production.
@@ -68,7 +60,6 @@ object XBridgePluginRegistry {
     fun register(
         flutterEngine: FlutterEngine,
         nativeBridge: XBridgeNativeBridge? = null,
-        webView: WebView? = null,
         securityPolicy: XBridgeSecurityPolicy = XBridgeSecurityPolicy.denyAll(),
     ) {
         // If already registered with the same engine, no-op (prevents duplicate handlers).
@@ -78,9 +69,6 @@ object XBridgePluginRegistry {
             currentPolicy = securityPolicy
             plugin?.setNativeBridge(nativeBridge)
             plugin?.setSecurityPolicy(securityPolicy)
-            if (webView != null) {
-                attachSyncInterface(webView)
-            }
             return
         }
 
@@ -109,29 +97,6 @@ object XBridgePluginRegistry {
         // FlutterPlugin triggers onAttachedToEngine automatically.
         flutterEngine.plugins.add(p)
         attachedEngine = flutterEngine
-
-        // Attach the sync bypass interface if a WebView is provided.
-        if (webView != null) {
-            attachSyncInterface(webView)
-        }
-    }
-
-    /**
-     * Attach (or re-attach) the `XBridgeSync` `@JavascriptInterface` to a
-     * WebView. Call this once the WebView is available (e.g. after
-     * `WebViewController` has created its platform view).
-     */
-    fun attachSyncInterface(webView: WebView) {
-        // Remove old interface from previous WebView if any.
-        attachedWebView?.removeJavascriptInterface("XBridgeSync")
-        val sync = XBridgeSyncInterface(
-            nativeBridgeProvider = { currentBridge },
-            securityPolicyProvider = { currentPolicy },
-            originProvider = { currentOrigin },
-        )
-        sync.attach(webView)
-        syncInterface = sync
-        attachedWebView = webView
     }
 
     /**
@@ -152,8 +117,8 @@ object XBridgePluginRegistry {
     }
 
     /**
-     * Set the current page origin for security policy checks on both
-     * the fallback [XBridgePlugin] and the sync bypass interface.
+     * Set the current page origin for security policy checks on
+     * the [XBridgePlugin].
      */
     fun setOrigin(url: String?) {
         currentOrigin = url
@@ -163,19 +128,28 @@ object XBridgePluginRegistry {
     /**
      * Detach and clean up. Call from `MainActivity.onDestroy` or
      * `cleanUpFlutterEngine`.
+     *
+     * The plugin is only removed if [flutterEngine] is the same engine it was
+     * registered against ([attachedEngine]). Passing a different engine is a
+     * no-op: we must not tear down a plugin owned by another engine.
      */
     fun unregister(flutterEngine: FlutterEngine) {
+        val attached = attachedEngine
+        if (attached == null || attached !== flutterEngine) {
+            android.util.Log.w(
+                "XBridgePluginRegistry",
+                "unregister() ignored: engine does not match the registered engine " +
+                    "(expected ${attached?.hashCode() ?: "none"}, got ${flutterEngine.hashCode()}).",
+            )
+            return
+        }
         plugin?.let {
             flutterEngine.plugins.remove(it.javaClass)
         }
-        // Remove the JavascriptInterface from the WebView to prevent leaks.
-        attachedWebView?.removeJavascriptInterface("XBridgeSync")
         plugin = null
-        syncInterface = null
         currentBridge = null
         currentOrigin = null
         currentPolicy = XBridgeSecurityPolicy.denyAll()
         attachedEngine = null
-        attachedWebView = null
     }
 }

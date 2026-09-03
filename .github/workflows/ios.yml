@@ -26,7 +26,7 @@ jobs:
         run: |
           # Typecheck files that don't import Flutter/WebKit — these should
           # compile cleanly without any external framework.
-          PURE_SWIFT=$(find Sources -name '*.swift' ! -name 'XBridgePlugin.swift' ! -name 'XBridgeSyncHandler.swift' ! -name 'LocalWsServerBridge.swift')
+          PURE_SWIFT=$(find Sources -name '*.swift' ! -name 'XBridgePlugin.swift' ! -name 'LocalWsServerBridge.swift')
           if [ -n "$PURE_SWIFT" ]; then
             swiftc -typecheck $PURE_SWIFT
           fi
@@ -37,7 +37,7 @@ jobs:
           # to produce "no such module" errors — we grep for real syntax
           # errors only. A non-zero exit from swiftc alone is NOT a failure
           # here; we check for actual syntax/type errors.
-          FLUTTER_SWIFT=$(find Sources -name '*.swift' \( -name 'XBridgePlugin.swift' -o -name 'XBridgeSyncHandler.swift' -o -name 'LocalWsServerBridge.swift' \))
+          FLUTTER_SWIFT=$(find Sources -name '*.swift' \( -name 'XBridgePlugin.swift' -o -name 'LocalWsServerBridge.swift' \))
           if [ -n "$FLUTTER_SWIFT" ]; then
             swiftc -typecheck $FLUTTER_SWIFT 2>&1 | \
               grep -v "no such module\|cannot find type\|use of undeclared\|did not find" | \

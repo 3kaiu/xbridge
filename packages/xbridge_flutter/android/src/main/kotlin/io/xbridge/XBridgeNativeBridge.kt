@@ -13,7 +13,6 @@ package io.xbridge
  *
  * [invoke] may be called from:
  * - The Flutter platform thread (MethodChannel callback thread).
- * - The WebView's JS thread (via [XBridgeSyncInterface.callSync]).
  *
  * Implementations must be thread-safe or must dispatch to their own preferred
  * thread internally. If the legacy bridge requires the UI thread, the

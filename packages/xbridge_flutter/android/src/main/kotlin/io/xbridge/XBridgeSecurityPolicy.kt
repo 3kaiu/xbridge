@@ -6,8 +6,7 @@ package io.xbridge
  *
  * The **primary** security gate lives in the Flutter `BridgeController`,
  * which checks the page origin before dispatching. This native policy is a
- * secondary check for calls that arrive via the sync bypass
- * ([XBridgeSyncInterface]) or directly via the fallback MethodChannel.
+ * secondary check for calls that arrive via the fallback MethodChannel.
  *
  * @property allowedOrigins  Set of allowed origins (e.g.
  *                            `setOf("https://app.example.com")`).
@@ -80,8 +79,8 @@ data class XBridgeSecurityPolicy(
      *   页面仍可调用任意方法，能力级鉴权形同虚设。
      *
      * 注意：本实现**不包含 frame 归因**。Android 的 `addJavascriptInterface`
-     * 会暴露给 WebView 的所有 frame，且平台不提供「校验调用 frame」的公开机制
-     * （见 [XBridgeSyncInterface] 类 KDoc）。因此这里仅以 origin + method
+     * 会暴露给 WebView 的所有 frame，且平台不提供「校验调用 frame」的公开机制。
+     * 因此这里仅以 origin + method
      * allowlist 作为有效闸门；iOS 侧才具备 `frameInfo.isMainFrame` 的强归因。
      */
     fun isMethodAllowed(origin: String?, method: String): Boolean {
