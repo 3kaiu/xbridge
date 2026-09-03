@@ -8,19 +8,35 @@ import '../bridge_controller.dart';
 class WebViewFlutterBridgeAdapter {
   WebViewController? _attachedController;
   BridgeController? _attachedBridge;
+  BridgeTransport? _attachedTransport;
 
   /// Attach this adapter to [controller] and [bridge].
   ///
   /// Optionally pass [hostNavigationDelegate] so that existing app-level
   /// navigation callbacks (such as page progress, resource errors, or URL routing)
   /// are preserved and invoked alongside bridge lifecycle events.
+  ///
+  /// [enableBatching] wraps the transport in a [BatchingTransport] that
+  /// coalesces outbound JS evaluations (resolves/rejects/events) per synchronous
+  /// tick into a single WebView evaluation — a large win for bursty H5 traffic
+  /// with zero added latency. Pass `false` to evaluate each snippet separately.
+  /// [flushInterval] switches batching to time-window mode (at most one
+  /// evaluation per interval) for steady high-frequency event streams; `null`
+  /// keeps microtask batching.
   void attach(
     WebViewController controller,
     BridgeController bridge, {
     String channelName = 'XBridge',
     NavigationDelegate? hostNavigationDelegate,
+    bool enableBatching = true,
+    Duration? flushInterval,
   }) {
-    bridge.setTransport(_WebViewFlutterTransport(controller));
+    final inner = _WebViewFlutterTransport(controller);
+    final BridgeTransport transport = enableBatching
+        ? BatchingTransport(inner, flushInterval: flushInterval)
+        : inner;
+    bridge.setTransport(transport);
+    _attachedTransport = transport;
     controller.addJavaScriptChannel(
       channelName,
       onMessageReceived: (JavaScriptMessage message) {
@@ -82,11 +98,18 @@ class WebViewFlutterBridgeAdapter {
       controller.removeJavaScriptChannel(channelName);
       controller.setNavigationDelegate(NavigationDelegate());
     }
+    // Flush any buffered outbound snippets before the transport is replaced:
+    // a batch still queued at detach time would otherwise be lost.
+    final transport = _attachedTransport;
+    if (transport is BatchingTransport) {
+      transport.dispose();
+    }
     // Clear the transport on the bridge so post-detach calls fail loudly
     // instead of silently operating on a detached WebView.
-    _attachedBridge?.setTransport(_DisposedTransport());
+    _attachedBridge?.setTransport(BrokenBridgeTransport('WebView'));
     _attachedController = null;
     _attachedBridge = null;
+    _attachedTransport = null;
   }
 }
 
@@ -105,49 +128,12 @@ String? _extractOrigin(String? url) {
   }
 }
 
-class _WebViewFlutterTransport implements BridgeTransport {
+class _WebViewFlutterTransport extends ScriptTransport {
   _WebViewFlutterTransport(this._controller);
 
   final WebViewController _controller;
 
   @override
-  Future<void> resolve(String id, dynamic result) =>
-      _controller.runJavaScript(BridgeScriptBuilder.buildResolveScript(id, result));
-
-  @override
-  Future<void> reject(String id, BridgeError error) =>
-      _controller.runJavaScript(BridgeScriptBuilder.buildRejectScript(id, error.toJson()));
-
-  @override
-  Future<void> dispatchEvent(BridgeEvent event) =>
-      _controller.runJavaScript(BridgeScriptBuilder.buildEventScript(event));
-
-  @override
-  Future<void> callH5Handler(String id, String method, dynamic params) =>
-      _controller.runJavaScript(BridgeScriptBuilder.buildCallH5Script(id, method, params));
-}
-
-/// Transport that throws on all calls — used after `detach` to ensure
-/// callers get a clear error instead of silently operating on a detached
-/// WebView.
-class _DisposedTransport implements BridgeTransport {
-  @override
-  Future<void> resolve(String id, dynamic result) async {
-    throw StateError('[XBridge] WebView adapter has been detached');
-  }
-
-  @override
-  Future<void> reject(String id, BridgeError error) async {
-    throw StateError('[XBridge] WebView adapter has been detached');
-  }
-
-  @override
-  Future<void> dispatchEvent(BridgeEvent event) async {
-    throw StateError('[XBridge] WebView adapter has been detached');
-  }
-
-  @override
-  Future<void> callH5Handler(String id, String method, dynamic params) async {
-    throw StateError('[XBridge] WebView adapter has been detached');
-  }
+  Future<void> evaluateScript(String source) =>
+      _controller.runJavaScript(source);
 }

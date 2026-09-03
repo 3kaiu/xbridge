@@ -6,6 +6,8 @@ import '../bridge_controller.dart';
 /// Adapter that wires a `flutter_inappwebview` [InAppWebViewController] into a
 /// [BridgeController].
 class InAppWebViewBridgeAdapter {
+  BridgeTransport? _attachedTransport;
+
   /// Attach this adapter to the [controller] and [bridge].
   ///
   /// **Important**: You MUST also call [onLoadStop] from your
@@ -14,6 +16,14 @@ class InAppWebViewBridgeAdapter {
   /// and never updates on navigation — a page that navigates to an
   /// untrusted origin would still pass the security policy check using
   /// the stale trusted origin.
+  ///
+  /// [enableBatching] wraps the transport in a [BatchingTransport] that
+  /// coalesces outbound JS evaluations (resolves/rejects/events) per
+  /// synchronous tick into a single WebView evaluation — a large win for
+  /// bursty H5 traffic with zero added latency. Pass `false` to evaluate each
+  /// snippet separately. [flushInterval] switches batching to time-window
+  /// mode for steady high-frequency event streams; `null` keeps microtask
+  /// batching.
   ///
   /// ```dart
   /// InAppWebView(
@@ -27,8 +37,15 @@ class InAppWebViewBridgeAdapter {
     InAppWebViewController controller,
     BridgeController bridge, {
     String handlerName = 'XBridge',
+    bool enableBatching = true,
+    Duration? flushInterval,
   }) {
-    bridge.setTransport(_InAppWebViewTransport(controller));
+    final inner = _InAppWebViewTransport(controller);
+    final BridgeTransport transport = enableBatching
+        ? BatchingTransport(inner, flushInterval: flushInterval)
+        : inner;
+    bridge.setTransport(transport);
+    _attachedTransport = transport;
     controller.addJavaScriptHandler(
       handlerName: handlerName,
       callback: (List<dynamic> args) {
@@ -75,9 +92,16 @@ class InAppWebViewBridgeAdapter {
     String handlerName = 'XBridge',
   }) {
     controller.removeJavaScriptHandler(handlerName: handlerName);
+    // Flush any buffered outbound snippets before the transport is replaced:
+    // a batch still queued at detach time would otherwise be lost.
+    final transport = _attachedTransport;
+    if (transport is BatchingTransport) {
+      transport.dispose();
+    }
     bridge
-      ..setTransport(_NullTransport())
+      ..setTransport(BrokenBridgeTransport('InAppWebView'))
       ..setCurrentOrigin(null);
+    _attachedTransport = null;
   }
 }
 
@@ -95,47 +119,12 @@ String? _extractOrigin(String? url) {
   }
 }
 
-class _InAppWebViewTransport implements BridgeTransport {
+class _InAppWebViewTransport extends ScriptTransport {
   _InAppWebViewTransport(this._controller);
 
   final InAppWebViewController _controller;
 
   @override
-  Future<void> resolve(String id, dynamic result) {
-    return _controller.evaluateJavascript(source: BridgeScriptBuilder.buildResolveScript(id, result));
-  }
-
-  @override
-  Future<void> reject(String id, BridgeError error) {
-    return _controller.evaluateJavascript(source: BridgeScriptBuilder.buildRejectScript(id, error.toJson()));
-  }
-
-  @override
-  Future<void> dispatchEvent(BridgeEvent event) {
-    return _controller.evaluateJavascript(source: BridgeScriptBuilder.buildEventScript(event));
-  }
-
-  @override
-  Future<void> callH5Handler(String id, String method, dynamic params) {
-    return _controller.evaluateJavascript(source: BridgeScriptBuilder.buildCallH5Script(id, method, params));
-  }
-}
-
-class _NullTransport implements BridgeTransport {
-  @override
-  Future<void> resolve(String id, dynamic result) async {
-    throw StateError('[XBridge] InAppWebView adapter has been detached');
-  }
-  @override
-  Future<void> reject(String id, BridgeError error) async {
-    throw StateError('[XBridge] InAppWebView adapter has been detached');
-  }
-  @override
-  Future<void> dispatchEvent(BridgeEvent event) async {
-    throw StateError('[XBridge] InAppWebView adapter has been detached');
-  }
-  @override
-  Future<void> callH5Handler(String id, String method, dynamic params) async {
-    throw StateError('[XBridge] InAppWebView adapter has been detached');
-  }
+  Future<void> evaluateScript(String source) =>
+      _controller.evaluateJavascript(source: source);
 }
