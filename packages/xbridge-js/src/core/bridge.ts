@@ -191,6 +191,7 @@ export class XBridgeCore {
   call(method: string, params?: unknown, options?: XBridgeCallOptions): Promise<unknown> {
     const hasFallback = options !== undefined && "fallback" in options;
     const readyTimeout = options?.readyTimeout ?? 1500;
+    const retryAttempt = options?._retryAttempt ?? 0;
     // 关键：`call` 不能是 async，否则 `return pendingPromise` 会让 async 机制
     // 生成一个「采纳后的新 promise」返回给调用方，而本方法内的 no-op catch 若只
     // 挂在内部 `pendingPromise` 上，就保护不了调用方实际持有的那个采纳 promise，
@@ -209,12 +210,59 @@ export class XBridgeCore {
         }
       }
 
-      return this.callDispatch(method, params, options, hasFallback);
+      try {
+        return await this.callDispatch(method, params, options, hasFallback);
+      } catch (err) {
+        // Auto-retry on InvalidAccessError (network recovery race condition)
+        if (this.isInvalidAccessError(err) && retryAttempt === 0) {
+          if (typeof console !== "undefined") {
+            console.warn(
+              `[XBridge] call('${method}') encountered InvalidAccessError (likely network recovery race), waiting for XBridgeReady...`,
+            );
+          }
+          // Wait for bridge to become ready (max 500ms)
+          try {
+            await this.ready(500);
+            if (typeof console !== "undefined") {
+              console.warn(`[XBridge] call('${method}') XBridge ready, retrying...`);
+            }
+            // Retry once with _retryAttempt flag to prevent infinite loop
+            return await this.call(method, params, {
+              ...options,
+              _retryAttempt: 1,
+            });
+          } catch (readyErr) {
+            // ready() timed out, treat as permanently unavailable
+            if (typeof console !== "undefined") {
+              console.warn(
+                `[XBridge] call('${method}') ready timeout, treating as permanently unavailable`,
+              );
+            }
+          }
+        }
+        // Re-throw original error after retry failure or non-retryable error
+        throw err;
+      }
     })();
     // Attach a no-op catch to suppress WebKit's transient unhandledrejection
     // (the caller's `await`/`catch` will still observe the rejection).
     outer.catch(() => {});
     return outer;
+  }
+
+  /**
+   * Check if an error is an InvalidAccessError from postMessage.
+   * This typically occurs during network recovery when the WebView bridge
+   * channel is not yet ready.
+   */
+  private isInvalidAccessError(err: unknown): boolean {
+    if (!err) return false;
+    const error = err as { name?: string; message?: string };
+    return (
+      error.name === "InvalidAccessError" ||
+      (typeof error.message === "string" &&
+        /The object does not support the operation/.test(error.message))
+    );
   }
 
   /**

@@ -90,6 +90,12 @@ export interface XBridgeCallOptions {
    * Set to 0 to disable ready waiting and fail fast.
    */
   readyTimeout?: number;
+  /**
+   * Internal retry attempt counter (do not use externally).
+   * Tracks how many times this call has been retried to prevent infinite loops.
+   * @internal
+   */
+  _retryAttempt?: number;
 }
 
 /**
