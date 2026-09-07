@@ -14,7 +14,7 @@ A generic, open-source, business-free cross-platform bridge SDK — one protocol
 
 - **Independent layers** — H5 / Flutter / Native each integrate on their own; degraded automatically when no bridge is present (`use it when available, treat as no-bridge otherwise`).
 - **Pure async JSON-RPC** — unified as a strictly async protocol since v0.1.4; the sync bypass channel has been removed.
-- **Self-healing availability** — a probe detects a broken `postMessage` environment and automatically recalls once injection lands (v0.1.5).
+- **Self-healing availability** — a probe detects a broken `postMessage` environment and automatically recalls once injection lands (v0.1.7).
 - **High-volume media passthrough** — local WebSocket, full-duplex, zero-serialization, for ArrayBuffer streams.
 - **Defense in depth** — origin allowlist validation; the native layer and its Flutter copy stay **byte-identical** (single source of truth), preventing security logic drift across the three platforms.
 
@@ -47,7 +47,7 @@ try {
 # pubspec.yaml
 dependencies:
   xbridge_flutter:
-    git: { url: https://github.com/3kaiu/xbridge.git, path: packages/xbridge_flutter, ref: v0.1.5 }
+    git: { url: https://github.com/3kaiu/xbridge.git, path: packages/xbridge_flutter, ref: v0.1.7 }
 ```
 
 ```dart
@@ -60,7 +60,7 @@ Android / iOS native code ships with the Flutter plugin automatically — zero c
 ### Android — JitPack
 
 ```groovy
-implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.5'
+implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.7'
 ```
 
 Standalone consumers use its security / fallback capabilities (the WebView-mounting `XBridgeSyncInterface` was removed in 0.1.4):
@@ -73,7 +73,7 @@ val policy = XBridgeSecurityPolicy.allowlist(setOf("https://app.example.com"))
 ### iOS — CocoaPods
 
 ```ruby
-pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => 'v0.1.5'
+pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => 'v0.1.7'
 ```
 
 ```swift
@@ -155,8 +155,8 @@ cd packages/xbridge-android && ./gradlew :xbridge-core:build
 Pushing a `v*` tag triggers automated releases via GitHub Actions (the latest tag is the single source of truth for the version, bumped uniformly with `scripts/version.sh`):
 
 ```bash
-git tag v0.1.5
-git push origin v0.1.5
+git tag v0.1.7
+git push origin v0.1.7
 ```
 
 - npm auto-publishes; JitPack auto-builds the AAR; a GitHub Release with install instructions is auto-created.

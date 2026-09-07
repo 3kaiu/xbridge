@@ -14,7 +14,7 @@
 
 - **三层独立** —— H5 / Flutter / Native 各自可单独接入；无桥环境自动降级（`可用才用，不可用当无桥`）。
 - **纯异步 JSON-RPC** —— v0.1.4 起统一为绝对异步协议，同步旁路通道已移除。
-- **可用性自愈** —— 探针检测 `postMessage` 坏环境，注入后自动重连（v0.1.5）。
+- **可用性自愈** —— 探针检测 `postMessage` 坏环境，注入后自动重连（v0.1.7）。
 - **大体积多媒体直通** —— 本地 WebSocket 全双工、零序列化，支撑 ArrayBuffer 流。
 - **纵深安全** —— origin allowlist 校验；原生层与 Flutter 副本保持**逐字节一致**（单一事实源），杜绝三端安全逻辑漂移。
 
@@ -47,7 +47,7 @@ try {
 # pubspec.yaml
 dependencies:
   xbridge_flutter:
-    git: { url: https://github.com/3kaiu/xbridge.git, path: packages/xbridge_flutter, ref: v0.1.5 }
+    git: { url: https://github.com/3kaiu/xbridge.git, path: packages/xbridge_flutter, ref: v0.1.7 }
 ```
 
 ```dart
@@ -60,7 +60,7 @@ Android / iOS 原生代码随 Flutter plugin 自动包含，零配置。
 ### Android — JitPack
 
 ```groovy
-implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.5'
+implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.7'
 ```
 
 独立消费方使用其安全 / fallback 能力（WebView 挂载的 `XBridgeSyncInterface` 已于 0.1.4 移除）：
@@ -73,7 +73,7 @@ val policy = XBridgeSecurityPolicy.allowlist(setOf("https://app.example.com"))
 ### iOS — CocoaPods
 
 ```ruby
-pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => 'v0.1.5'
+pod 'XBridgeiOS/Core', :git => 'https://github.com/3kaiu/xbridge.git', :tag => 'v0.1.7'
 ```
 
 ```swift
@@ -155,8 +155,8 @@ cd packages/xbridge-android && ./gradlew :xbridge-core:build
 推送 `v*` tag 触发 GitHub Actions 自动发布（version 以最新 tag 为单一事实源，用 `scripts/version.sh` 统一 bump）：
 
 ```bash
-git tag v0.1.5
-git push origin v0.1.5
+git tag v0.1.7
+git push origin v0.1.7
 ```
 
 - npm 自动 publish；JitPack 自动构建 AAR；GitHub Release 自动创建，带安装说明。

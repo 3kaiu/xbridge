@@ -20,7 +20,7 @@ Add `xbridge_flutter` to your `pubspec.yaml` — the Android native code is bund
 ```groovy
 // build.gradle
 dependencies {
-    implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.5'
+    implementation 'com.github.3kaiu.xbridge:xbridge-core:v0.1.7'
 }
 ```
 
