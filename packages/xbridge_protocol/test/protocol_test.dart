@@ -152,4 +152,35 @@ void main() {
       );
     });
   });
+
+  group('BridgeScriptBuilder.buildInvalidationScript', () {
+    test('replaces whole channel object and throws XBridgeSendError', () {
+      final js = BridgeScriptBuilder.buildInvalidationScript('XBridge');
+      // 必须整体替换 window.XBridge（stale 宿主对象属性写入不可靠）。
+      expect(js, contains('window.XBridge = {'));
+      expect(js, contains('postMessage'));
+      // JS 侧 circuit-breaker 按 err.name === 'XBridgeSendError' 识别。
+      expect(js, contains("err.name = 'XBridgeSendError'"));
+      expect(
+        js,
+        contains("new Error('[XBridge] native bridge has been detached')"),
+      );
+      // 包裹 try/catch，注入失败也不影响页面。
+      expect(js, contains('try {'));
+      expect(js, contains('catch (e) {}'));
+    });
+
+    test('interpolates custom channel name', () {
+      final js = BridgeScriptBuilder.buildInvalidationScript('MyChannel');
+      expect(js, contains('window.MyChannel = {'));
+      expect(js, isNot(contains('window.XBridge')));
+    });
+
+    test('rejects invalid JS identifiers', () {
+      expect(
+        () => BridgeScriptBuilder.buildInvalidationScript('1bad-name'),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+  });
 }

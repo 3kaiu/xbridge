@@ -10,6 +10,15 @@ class WebViewFlutterBridgeAdapter {
   BridgeController? _attachedBridge;
   BridgeTransport? _attachedTransport;
 
+  /// Set by [detach] and cleared by [attach].
+  ///
+  /// While true, inbound channel messages are dropped before they reach the
+  /// bridge. The JS-side invalidation script is the primary defense, but on
+  /// some platforms it may not take effect (Android's `addJavascriptInterface`
+  /// host object can expose read-only properties), so the Dart side must
+  /// enforce the post-detach cut-off deterministically.
+  bool _detached = false;
+
   /// Attach this adapter to [controller] and [bridge].
   ///
   /// Optionally pass [hostNavigationDelegate] so that existing app-level
@@ -23,6 +32,10 @@ class WebViewFlutterBridgeAdapter {
   /// [flushInterval] switches batching to time-window mode (at most one
   /// evaluation per interval) for steady high-frequency event streams; `null`
   /// keeps microtask batching.
+  ///
+  /// Attach is expected to be paired with a single [detach] when the WebView
+  /// is permanently torn down. Detaching while reusing the same controller is
+  /// unsupported — see [detach] for why.
   void attach(
     WebViewController controller,
     BridgeController bridge, {
@@ -31,6 +44,7 @@ class WebViewFlutterBridgeAdapter {
     bool enableBatching = true,
     Duration? flushInterval,
   }) {
+    _detached = false;
     final inner = _WebViewFlutterTransport(controller);
     final BridgeTransport transport = enableBatching
         ? BatchingTransport(inner, flushInterval: flushInterval)
@@ -40,6 +54,12 @@ class WebViewFlutterBridgeAdapter {
     controller.addJavaScriptChannel(
       channelName,
       onMessageReceived: (JavaScriptMessage message) {
+        // Dart-side inbound gate: the JS invalidation script can fail to land
+        // (e.g. read-only host object on Android), so post-detach messages
+        // must be dropped here where the cut-off is always enforceable.
+        if (_detached) {
+          return;
+        }
         bridge.handleRawMessage(message.message);
       },
     );
@@ -92,10 +112,36 @@ class WebViewFlutterBridgeAdapter {
     );
   }
 
+  /// Detaches this adapter from the previously attached WebView.
+  ///
+  /// Contract: only call this when the WebView is about to be destroyed.
+  ///
+  /// On webview_flutter_wkwebview, `removeJavaScriptChannel` is implemented as
+  /// "remove ALL user scripts + message handlers, then re-add them
+  /// asynchronously" (`_resetUserScripts`). During that window a still-running
+  /// old document keeps its stale `window.XBridge`, and any
+  /// `XBridge.postMessage` from it synchronously throws a native
+  /// `InvalidAccessError`. Therefore detach deliberately does NOT remove the
+  /// JavaScript channel. Instead it injects an invalidation script that
+  /// replaces `window.<channelName>` with a thrower whose error carries
+  /// `name === 'XBridgeSendError'` — the sentinel the JS adapter's circuit
+  /// breaker recognizes, so late sends fail loudly but safely.
+  ///
+  /// The buffered transport is flushed and the bridge is switched to a
+  /// [BrokenBridgeTransport] so post-detach native-side traffic fails fast.
+  ///
+  /// As the last line of defense, inbound messages arriving after [detach]
+  /// are dropped at the Dart layer: the invalidation script may fail to land
+  /// on some platforms (e.g. Android's `addJavascriptInterface` host object
+  /// can expose read-only properties), so this Dart-side guard — not the JS
+  /// script — is the authoritative cut-off for post-detach requests.
   void detach({String channelName = 'XBridge'}) {
+    _detached = true;
     final controller = _attachedController;
     if (controller != null) {
-      controller.removeJavaScriptChannel(channelName);
+      controller
+          .runJavaScript(BridgeScriptBuilder.buildInvalidationScript(channelName))
+          .catchError((_) {});
       controller.setNavigationDelegate(NavigationDelegate());
     }
     // Flush any buffered outbound snippets before the transport is replaced:

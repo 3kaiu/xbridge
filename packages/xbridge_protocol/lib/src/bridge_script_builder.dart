@@ -144,4 +144,42 @@ class BridgeScriptBuilder {
     return 'window.__XBridgeInbound__'
         '&&window.__XBridgeInbound__(${safeJsonEncode(request)});';
   }
+
+  /// Builds JS snippet that invalidates `window.<channelName>` after detach.
+  ///
+  /// Replaces the (possibly stale native host) bridge object with a pure-JS
+  /// thrower whose error carries `name === 'XBridgeSendError'` — the sentinel
+  /// recognized by the JS adapter's circuit breaker
+  /// (`standard.ts` / `bridge.ts isSendError`).
+  ///
+  /// Why full replacement instead of patching `.postMessage`: on
+  /// webview_flutter_wkwebview the stale `window.XBridge` is a host object
+  /// (WKMessageHandler reference); writing properties on host objects is not
+  /// reliable, whereas a plain `window.<channelName> = {...}` assignment on
+  /// the JS global always succeeds.
+  ///
+  /// Scope note: the replacement lives only in the current document's global
+  /// scope. A later navigation gets a fresh global re-provisioned by the
+  /// native document-start user script, so the invalidation never leaks into
+  /// a reused WebView's next page.
+  static String buildInvalidationScript(String channelName) {
+    assert(
+      RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(channelName),
+      'channelName must be a valid JS identifier, got: $channelName',
+    );
+    return '''
+(function() {
+  'use strict';
+  try {
+    window.$channelName = {
+      postMessage: function() {
+        var err = new Error('[XBridge] native bridge has been detached');
+        err.name = 'XBridgeSendError';
+        throw err;
+      }
+    };
+  } catch (e) {}
+})();
+''';
+  }
 }
