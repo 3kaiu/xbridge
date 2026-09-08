@@ -39,6 +39,7 @@ function isSendError(err: unknown): err is XBridgeSendError {
 }
 
 function isResponse(msg: XBridgeMessage): msg is XBridgeResponse {
+  if (msg === null || typeof msg !== "object") return false;
   const id = (msg as XBridgeResponse).id;
   return (typeof id === "string" || typeof id === "number")
     && typeof (msg as XBridgeEvent).method !== "string"
@@ -46,6 +47,7 @@ function isResponse(msg: XBridgeMessage): msg is XBridgeResponse {
 }
 
 function isInboundRequest(msg: XBridgeMessage): msg is XBridgeRequest {
+  if (msg === null || typeof msg !== "object") return false;
   const id = (msg as XBridgeRequest).id;
   return (typeof id === "string" || typeof id === "number") && typeof (msg as XBridgeRequest).method === "string";
 }
@@ -104,7 +106,12 @@ export class XBridgeCore {
    * Otherwise listens to the host's `XBridgeReady` CustomEvent, checks `window.__xbridge_ready__`,
    * or polls at short intervals until `timeoutMs` (default 3000ms).
    */
-  ready(timeoutMs: number = 3000): Promise<void> {
+  ready(timeoutMs: number = 3000, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(
+        new XBridgeSendError("[XBridge] bridge ready handshake aborted"),
+      );
+    }
     if (this.disposed) {
       return Promise.reject(new XBridgeSendError("[XBridge] bridge has been disposed"));
     }
@@ -117,13 +124,14 @@ export class XBridgeCore {
     ) {
       return Promise.resolve();
     }
-    if (timeoutMs <= 0) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       return Promise.reject(new XBridgeSendError("[XBridge] bridge is not ready"));
     }
 
     return new Promise<void>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let interval: ReturnType<typeof setInterval> | undefined;
+      let abortListener: (() => void) | undefined;
       let cleanedUp = false;
 
       const cleanup = (): void => {
@@ -134,6 +142,9 @@ export class XBridgeCore {
         if (typeof globalThis !== "undefined" && typeof globalThis.removeEventListener === "function") {
           globalThis.removeEventListener("XBridgeReady", onReadyEvent);
         }
+        if (signal !== undefined && abortListener !== undefined && typeof signal.removeEventListener === "function") {
+          signal.removeEventListener("abort", abortListener);
+        }
         this.pendingReadyCleanups.delete(cleanup);
         this.pendingReadyRejects.delete(reject);
       };
@@ -142,6 +153,16 @@ export class XBridgeCore {
       // while ready() is still polling.
       this.pendingReadyCleanups.add(cleanup);
       this.pendingReadyRejects.add(reject);
+
+      if (signal !== undefined) {
+        abortListener = (): void => {
+          cleanup();
+          reject(new XBridgeSendError("[XBridge] bridge ready handshake aborted"));
+        };
+        if (typeof signal.addEventListener === "function") {
+          signal.addEventListener("abort", abortListener, { once: true });
+        }
+      }
 
       const onReadyEvent = (): void => {
         cleanup();
@@ -200,14 +221,24 @@ export class XBridgeCore {
     // 挂在 `outer` 上（调用方拿到的正是它），使 WebKit 缓解真正生效；调用方后续
     // 的 `await`/`catch` 仍是同一 promise 的第二个 handler，依然能看到拒绝。
     const outer = (async (): Promise<unknown> => {
+      if (this.disposed) {
+        throw new XBridgeSendError("[XBridge] bridge has been disposed");
+      }
       if (!this.isConnected() && readyTimeout > 0) {
         try {
           await this.ready(readyTimeout);
         } catch {
+          if (this.disposed) {
+            throw new XBridgeSendError("[XBridge] bridge has been disposed");
+          }
           if (hasFallback) {
             return (options as XBridgeCallOptions).fallback;
           }
         }
+      }
+
+      if (this.disposed) {
+        throw new XBridgeSendError("[XBridge] bridge has been disposed");
       }
 
       try {
@@ -215,40 +246,63 @@ export class XBridgeCore {
       } catch (err) {
         // Auto-retry on InvalidAccessError (network recovery race condition)
         if (this.isInvalidAccessError(err) && retryAttempt === 0) {
+          if (this.disposed) {
+            throw new XBridgeSendError("[XBridge] bridge has been disposed");
+          }
           if (typeof console !== "undefined") {
             console.warn(
               `[XBridge] call('${method}') encountered InvalidAccessError (likely network recovery race), waiting for XBridgeReady...`,
             );
           }
-          // Wait for bridge ready event (up to 500ms) or auto backoff 120ms for legacy apps without XBridgeReady event
-          let backoffTimer: ReturnType<typeof setTimeout> | undefined;
-          try {
-            await Promise.race([
-              this.ready(500),
-              new Promise((resolve) => {
-                backoffTimer = setTimeout(resolve, 120);
-              }),
-            ]);
-            if (typeof console !== "undefined") {
-              console.warn(`[XBridge] call('${method}') auto-retrying after backoff/ready...`);
+          // P0-1 fix: DO NOT race this.ready(500) because isConnected() === true returns immediately (0.12ms)!
+          // Instead, race the XBridgeReady event against a 120ms backoff timer.
+          // If native host emits XBridgeReady within 120ms, wake up immediately;
+          // otherwise wait full 120ms for legacy hosts (v0.1.0/v0.1.6) without the event.
+          await new Promise<void>((resolve, reject) => {
+            let backoffTimer: ReturnType<typeof setTimeout> | undefined;
+            let cleanedUp = false;
+            const cleanup = (): void => {
+              if (cleanedUp) return;
+              cleanedUp = true;
+              if (backoffTimer !== undefined) {
+                clearTimeout(backoffTimer);
+                backoffTimer = undefined;
+              }
+              if (typeof globalThis !== "undefined" && typeof globalThis.removeEventListener === "function") {
+                globalThis.removeEventListener("XBridgeReady", onReady);
+              }
+              this.pendingReadyCleanups.delete(cleanup);
+              this.pendingReadyRejects.delete(reject);
+            };
+            const onReady = (): void => {
+              cleanup();
+              resolve();
+            };
+
+            this.pendingReadyCleanups.add(cleanup);
+            this.pendingReadyRejects.add(reject);
+
+            backoffTimer = setTimeout((): void => {
+              cleanup();
+              resolve();
+            }, 120);
+            if (typeof globalThis !== "undefined" && typeof globalThis.addEventListener === "function") {
+              globalThis.addEventListener("XBridgeReady", onReady, { once: true });
             }
-            // Retry once with _retryAttempt flag to prevent infinite loop
-            return await this.call(method, params, {
-              ...options,
-              _retryAttempt: 1,
-            });
-          } catch (readyErr) {
-            // ready() timed out, treat as permanently unavailable
-            if (typeof console !== "undefined") {
-              console.warn(
-                `[XBridge] call('${method}') ready timeout, treating as permanently unavailable`,
-              );
-            }
-          } finally {
-            if (backoffTimer !== undefined) {
-              clearTimeout(backoffTimer);
-            }
+          });
+
+          if (this.disposed) {
+            throw new XBridgeSendError("[XBridge] bridge has been disposed");
           }
+
+          if (typeof console !== "undefined") {
+            console.warn(`[XBridge] call('${method}') auto-retrying after backoff/ready...`);
+          }
+          // Retry once with _retryAttempt flag to prevent infinite loop
+          return await this.call(method, params, {
+            ...options,
+            _retryAttempt: 1,
+          });
         }
         if (this.isInvalidAccessError(err)) {
           if (hasFallback) {
@@ -283,6 +337,11 @@ export class XBridgeCore {
     options?: XBridgeCallOptions,
     hasFallback: boolean = false,
   ): Promise<unknown> {
+    if (this.disposed) {
+      const rejected = Promise.reject(new XBridgeSendError("[XBridge] bridge has been disposed"));
+      rejected.catch(() => {});
+      return rejected;
+    }
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
     const noCallback = options?.noCallback === true;
 
@@ -321,6 +380,12 @@ export class XBridgeCore {
             `[XBridge] call('${method}') failed to send:`,
             err instanceof Error ? err.message : err,
           );
+        }
+        const retryAttempt = options?._retryAttempt ?? 0;
+        if (this.isInvalidAccessError(err) && retryAttempt === 0) {
+          const rejected = Promise.reject(err);
+          rejected.catch(() => {});
+          return rejected;
         }
         if (hasFallback) {
           return Promise.resolve((options as XBridgeCallOptions).fallback);
@@ -365,6 +430,11 @@ export class XBridgeCore {
             err instanceof Error ? err.message : err,
           );
         }
+        const retryAttempt = options?._retryAttempt ?? 0;
+        if (this.isInvalidAccessError(err) && retryAttempt === 0) {
+          reject(err);
+          return;
+        }
         if (hasFallback) {
           resolve((options as XBridgeCallOptions).fallback);
           return;
@@ -381,6 +451,9 @@ export class XBridgeCore {
    * per method are supported. Returns an unsubscribe function.
    */
   onEvent(method: string, handler: XBridgeEventListener): () => void {
+    if (this.disposed) {
+      return (): void => {};
+    }
     let listeners = this.events.get(method);
     if (listeners === undefined) {
       listeners = new Set();
@@ -408,6 +481,9 @@ export class XBridgeCore {
    * Returns an unregister function (same pattern as {@link onEvent}).
    */
   registerHandler(method: string, handler: XBridgeHandler): () => void {
+    if (this.disposed) {
+      return (): void => {};
+    }
     this.handlers.set(method, handler);
     return (): void => {
       // Only delete if still the same handler — avoids removing a replacement.
@@ -494,6 +570,13 @@ export class XBridgeCore {
       return;
     }
 
+    if (msg === null || typeof msg !== "object") {
+      if (typeof console !== "undefined") {
+        console.warn("[XBridge] dropped malformed inbound message (not an object):", msg);
+      }
+      return;
+    }
+
     // jsonrpc version check: if the field exists and != "2.0", drop the message.
     // If absent, accept for backward compatibility.
     const version = (msg as { jsonrpc?: unknown }).jsonrpc;
@@ -508,11 +591,17 @@ export class XBridgeCore {
     if (isResponse(msg)) {
       const response = msg as XBridgeResponse;
       if (response.error !== undefined) {
-        // Validate error shape: must be an object with a string `message`.
+        // Validate error shape: must be an object with a string `message`, or a string.
         // Otherwise wrap as a structured error so downstream reject always
         // receives a well-formed XBridgeError.
         const rawError = response.error;
-        if (
+        if (typeof rawError === "string") {
+          this.dispatcher.reject(response.id, {
+            code: -32000,
+            message: rawError,
+            data: undefined,
+          });
+        } else if (
           rawError !== null &&
           typeof rawError === "object" &&
           typeof (rawError as { message?: unknown }).message === "string"
@@ -626,15 +715,33 @@ export class XBridgeCore {
     error: XBridgeError | undefined,
   ): void {
     // JSON-RPC 2.0 §5: result and error are mutually exclusive.
-    const response: XBridgeResponse = error !== undefined
-      ? { jsonrpc: XBRIDGE_PROTOCOL_VERSION, id, error }
-      : { jsonrpc: XBRIDGE_PROTOCOL_VERSION, id, result };
+    let payload: string;
     try {
-      this.adapter.send(JSON.stringify(response));
+      const response: XBridgeResponse = error !== undefined
+        ? { jsonrpc: XBRIDGE_PROTOCOL_VERSION, id, error }
+        : { jsonrpc: XBRIDGE_PROTOCOL_VERSION, id, result };
+      payload = JSON.stringify(response);
+    } catch (serializeErr) {
+      // Result cannot be serialized (e.g. circular structure or BigInt).
+      // Respond with a serialization error so the host does not hang indefinitely.
+      const fallbackResponse: XBridgeResponse = {
+        jsonrpc: XBRIDGE_PROTOCOL_VERSION,
+        id,
+        error: {
+          code: -32603,
+          message: "Internal error: response could not be serialized",
+          data: serializeErr instanceof Error ? serializeErr.message : String(serializeErr),
+        },
+      };
+      payload = JSON.stringify(fallbackResponse);
+    }
+
+    try {
+      this.adapter.send(payload);
     } catch (err) {
       if (isSendError(err) && this.fallbackAdapter && this.fallbackAdapter.isAvailable()) {
         try {
-          this.fallbackAdapter.send(JSON.stringify(response));
+          this.fallbackAdapter.send(payload);
           return;
         } catch {
           // ignore

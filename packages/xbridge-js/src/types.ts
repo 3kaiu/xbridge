@@ -62,6 +62,30 @@ export interface XBridgeError {
 /** Union of inbound host → H5 wire messages. */
 export type XBridgeMessage = XBridgeResponse | XBridgeEvent | XBridgeRequest;
 
+/**
+ * Diagnostic snapshot payload emitted on transport errors or resilience events.
+ */
+export interface XBridgeDiagnosticSnapshot {
+  method: string;
+  errorName?: string;
+  errorMessage?: string;
+  circuitState: string;
+  failureCount: number;
+  messageLength: number;
+  timestamp: number;
+  visibilityState?: string;
+  readyState?: string;
+  href?: string;
+  userAgent?: string;
+  xbridgeExists?: boolean;
+  postMessageType?: string;
+}
+
+/**
+ * Transport warning callback hook for enterprise observability (ARMS, Sentry, etc.).
+ */
+export type XBridgeTransportWarningHandler = (snapshot: XBridgeDiagnosticSnapshot) => void;
+
 /** Options accepted by {@link XBridgeCore.call}. */
 export interface XBridgeCallOptions {
   /** Per-call timeout in milliseconds. `0` disables the timeout. */
@@ -138,6 +162,12 @@ export class XBridgeSendError extends Error {
  * circular cause references and call stack exhaustion.
  */
 export function isInvalidAccessError(err: unknown, maxDepth = 5): boolean {
+  if (typeof err === "string") {
+    return (
+      /InvalidAccessError/i.test(err) ||
+      /The object does not support the operation/i.test(err)
+    );
+  }
   let current: unknown = err;
   let depth = 0;
   while (current !== null && typeof current === "object" && depth < maxDepth) {
@@ -146,7 +176,8 @@ export function isInvalidAccessError(err: unknown, maxDepth = 5): boolean {
       error.name === "InvalidAccessError" ||
       error.code === 15 ||
       (typeof error.message === "string" &&
-        /The object does not support the operation/i.test(error.message))
+        (/The object does not support the operation/i.test(error.message) ||
+          /InvalidAccessError/i.test(error.message)))
     ) {
       return true;
     }

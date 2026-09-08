@@ -6,6 +6,7 @@ import {
   StandardAdapter,
   resetSniffCache,
   XBridgeSendError,
+  isInvalidAccessError,
   XBRIDGE_PROTOCOL_VERSION,
 } from "../dist/index.js";
 
@@ -677,6 +678,770 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     const childError = new Error("Circular child", { cause: circularError });
     circularError.cause = childError;
     assert.strictEqual(bridge["isInvalidAccessError"](circularError), false, "Circular error must terminate safely without stack overflow");
+
+    bridge.dispose();
+  });
+
+  test("27. Fallback transparency: fallback option must NOT bypass auto-retry on transient error", async () => {
+    let bizAttempts = 0;
+    let bizCalls = 0;
+
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        const req = JSON.parse(raw);
+        if (req.method === "__xbridge_probe__") return;
+        bizCalls++;
+        if (bizAttempts === 0) {
+          bizAttempts++;
+          const err = new Error("The object does not support the operation or argument.");
+          err.name = "InvalidAccessError";
+          throw err;
+        }
+        setTimeout(() => {
+          globalThis.__XBridge__.resolve(req.id, { safeArea: 50 });
+        }, 5);
+      },
+    };
+
+    const bridge = new XBridge();
+    // Caller provides fallback: 0. Even with fallback, it MUST auto-retry and recover real data!
+    const res = await bridge.call("getSafeArea", {}, { fallback: 0 });
+    assert.deepStrictEqual(res, { safeArea: 50 }, "Must recover real value via auto-retry rather than prematurely returning fallback");
+    assert.strictEqual(bizCalls, 2, "Must retry exactly once");
+
+    bridge.dispose();
+  });
+
+  test("28. Fallback fallback: when retry also fails with transient error, fallback is returned safely", async () => {
+    let bizCalls = 0;
+
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        const req = JSON.parse(raw);
+        if (req.method === "__xbridge_probe__") return;
+        bizCalls++;
+        const err = new Error("The object does not support the operation or argument.");
+        err.name = "InvalidAccessError";
+        throw err;
+      },
+    };
+
+    const bridge = new XBridge();
+    // Both attempt 0 and retry attempt 1 fail with InvalidAccessError -> fallback safely returned
+    const res = await bridge.call("getSafeArea", {}, { fallback: 44 });
+    assert.strictEqual(res, 44, "Must safely return fallback when both initial call and retry fail");
+    assert.strictEqual(bizCalls, 2, "Must have retried once before giving up and returning fallback");
+
+    bridge.dispose();
+  });
+
+  test("29. XBridgeReady acceleration: modern App emitting XBridgeReady wakes up retry before 120ms timeout", async () => {
+    let bizAttempts = 0;
+    const startTime = Date.now();
+    const listeners = new Map();
+    const origAdd = globalThis.addEventListener;
+    const origRemove = globalThis.removeEventListener;
+    const origDispatch = globalThis.dispatchEvent;
+
+    globalThis.addEventListener = (type, fn, opts) => {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      const wrapper = (ev) => {
+        if (opts?.once) listeners.get(type)?.delete(wrapper);
+        fn(ev);
+      };
+      listeners.get(type).add(wrapper);
+    };
+    globalThis.removeEventListener = (type, fn) => {
+      listeners.get(type)?.delete(fn);
+    };
+    globalThis.dispatchEvent = (ev) => {
+      const set = listeners.get(ev.type);
+      if (set) {
+        for (const fn of Array.from(set)) {
+          fn(ev);
+        }
+      }
+      return true;
+    };
+
+    try {
+      globalThis.XBridge = {
+        postMessage: (raw) => {
+          const req = JSON.parse(raw);
+          if (req.method === "__xbridge_probe__") return;
+          if (bizAttempts === 0) {
+            bizAttempts++;
+            // Container fires XBridgeReady 20ms later to notify H5 that WKWebView message handler is re-attached
+            setTimeout(() => {
+              globalThis.dispatchEvent(new Event("XBridgeReady"));
+            }, 20);
+            const err = new Error("The object does not support the operation or argument.");
+            err.name = "InvalidAccessError";
+            throw err;
+          }
+          setTimeout(() => {
+            globalThis.__XBridge__.resolve(req.id, { token: "quick_token" });
+          }, 5);
+        },
+      };
+
+      const bridge = new XBridge();
+      const res = await bridge.call("getToken");
+      const elapsed = Date.now() - startTime;
+      assert.deepStrictEqual(res, { token: "quick_token" });
+      // Should wake up around ~25-60ms (well below the 120ms fallback timeout)
+      assert.ok(elapsed < 110, `Elapsed time (${elapsed}ms) should be less than 110ms due to XBridgeReady acceleration`);
+
+      bridge.dispose();
+    } finally {
+      globalThis.addEventListener = origAdd;
+      globalThis.removeEventListener = origRemove;
+      globalThis.dispatchEvent = origDispatch;
+    }
+  });
+
+  test("30. ready() AbortSignal support: cancels polling and rejects without leaking", async () => {
+    // 1. Abort before call
+    const controller1 = new AbortController();
+    controller1.abort();
+    const bridge1 = new XBridge();
+    await assert.rejects(
+      () => bridge1.ready(1000, controller1.signal),
+      (err) => err.message.includes("aborted")
+    );
+    bridge1.dispose();
+
+    // 2. Abort midway during polling
+    const controller2 = new AbortController();
+    const bridge2 = new XBridge();
+    const readyPromise = bridge2.ready(2000, controller2.signal);
+    setTimeout(() => {
+      controller2.abort();
+    }, 50);
+
+    await assert.rejects(
+      () => readyPromise,
+      (err) => err.message.includes("aborted")
+    );
+    bridge2.dispose();
+  });
+
+  test("31. Enterprise onTransportWarning hook receives diagnostic snapshot on failure", async () => {
+    let warningSnapshot = null;
+
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        const req = JSON.parse(raw);
+        if (req.method === "__xbridge_probe__") return;
+        const err = new Error("Provisional navigation in progress");
+        err.name = "InvalidAccessError";
+        throw err;
+      },
+    };
+
+    const bridge = new XBridge({
+      onTransportWarning: (snapshot) => {
+        warningSnapshot = snapshot;
+      },
+    });
+
+    await bridge.call("testWarning", { p: 1 }, { fallback: "warn_fallback" });
+    assert.ok(warningSnapshot !== null, "onTransportWarning must be invoked on transport error");
+    assert.strictEqual(warningSnapshot.method, "testWarning");
+    assert.strictEqual(warningSnapshot.errorName, "InvalidAccessError");
+    assert.strictEqual(warningSnapshot.circuitState, "CLOSED");
+
+    bridge.dispose();
+  });
+
+  test("32. BFCache pageshow self-healing: resets circuit breaker and availability probe", async () => {
+    const listeners = new Map();
+    const origAdd = globalThis.addEventListener;
+    const origRemove = globalThis.removeEventListener;
+    const origDispatch = globalThis.dispatchEvent;
+
+    globalThis.addEventListener = (type, fn) => {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    };
+    globalThis.removeEventListener = (type, fn) => {
+      listeners.get(type)?.delete(fn);
+    };
+    globalThis.dispatchEvent = (ev) => {
+      const set = listeners.get(ev.type);
+      if (set) {
+        for (const fn of Array.from(set)) {
+          fn(ev);
+        }
+      }
+      return true;
+    };
+
+    try {
+      const adapter = new StandardAdapter();
+      // Simulate broken state
+      adapter["circuitState"] = "OPEN";
+      adapter["lastFailureTime"] = Date.now();
+      adapter["availabilityProbeState"] = "broken";
+      adapter["availabilityProbeTransmitted"] = true;
+
+      assert.strictEqual(adapter.isAvailable(), false);
+
+      // Simulate pageshow event with persisted = true (BFCache restore)
+      const pageshowEvent = new Event("pageshow");
+      Object.defineProperty(pageshowEvent, "persisted", { value: true });
+      globalThis.dispatchEvent(pageshowEvent);
+
+      // State should be reset to CLOSED and unprobed
+      assert.strictEqual(adapter.state, "CLOSED");
+      assert.strictEqual(adapter.availabilityProbe, "unprobed");
+
+      adapter.destroy();
+    } finally {
+      globalThis.addEventListener = origAdd;
+      globalThis.removeEventListener = origRemove;
+      globalThis.dispatchEvent = origDispatch;
+    }
+  });
+
+  test("33. Probe cooldown differentiation: transient (200ms) vs permanent (5000ms)", () => {
+    const originalNow = Date.now;
+    let now = 100_000;
+    Date.now = () => now;
+
+    try {
+      // 1. Transient error: InvalidAccessError uses 200ms cooldown
+      let ready = false;
+      globalThis.XBridge = {
+        postMessage: () => {
+          if (!ready) {
+            const err = new Error("The object does not support the operation or argument.");
+            err.name = "InvalidAccessError";
+            throw err;
+          }
+        },
+      };
+
+      const adapter1 = new StandardAdapter();
+      assert.strictEqual(adapter1.isAvailable(), false);
+      assert.strictEqual(adapter1.availabilityProbe, "broken");
+
+      ready = true;
+      now += 150; // < 200ms cooldown
+      assert.strictEqual(adapter1.isAvailable(), false, "At 150ms (<200ms), must still be broken");
+
+      now += 60; // total 210ms >= 200ms
+      assert.strictEqual(adapter1.isAvailable(), true, "At 210ms (>=200ms), must re-probe and heal");
+      assert.strictEqual(adapter1.availabilityProbe, "healthy");
+      adapter1.destroy();
+
+      // 2. Permanent/unknown error: uses 5000ms cooldown
+      ready = false;
+      globalThis.XBridge = {
+        postMessage: () => {
+          if (!ready) {
+            throw new Error("Unknown host security exception");
+          }
+        },
+      };
+
+      const adapter2 = new StandardAdapter();
+      assert.strictEqual(adapter2.isAvailable(), false);
+      assert.strictEqual(adapter2.availabilityProbe, "broken");
+
+      ready = true;
+      now += 1000; // < 5000ms cooldown
+      assert.strictEqual(adapter2.isAvailable(), false, "At 1000ms (<5000ms), must still be broken");
+
+      now += 4050; // total 5050ms >= 5000ms
+      assert.strictEqual(adapter2.isAvailable(), true, "At 5050ms (>=5000ms), must re-probe and heal");
+      assert.strictEqual(adapter2.availabilityProbe, "healthy");
+      adapter2.destroy();
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test("34. Leak protection: destroy() cleans up pageshow listener even if saved globals were never initialized", () => {
+    let pageshowAdded = false;
+    let pageshowRemoved = false;
+    const origAdd = globalThis.addEventListener;
+    const origRemove = globalThis.removeEventListener;
+
+    globalThis.addEventListener = (type) => {
+      if (type === "pageshow") pageshowAdded = true;
+    };
+    globalThis.removeEventListener = (type) => {
+      if (type === "pageshow") pageshowRemoved = true;
+    };
+
+    try {
+      const adapter = new StandardAdapter();
+      assert.strictEqual(pageshowAdded, true, "pageshow listener must be installed on construction");
+      // saved is null because neither onMessage nor send was called
+      assert.strictEqual(adapter["saved"], null);
+
+      adapter.destroy();
+      assert.strictEqual(pageshowRemoved, true, "pageshow listener must be removed on destroy even if saved is null");
+      assert.strictEqual(adapter["boundPageshowListener"], null);
+    } finally {
+      globalThis.addEventListener = origAdd;
+      globalThis.removeEventListener = origRemove;
+    }
+  });
+
+  test("35. Teardown protection: dispose() during 120ms backoff aborts immediately without waiting or retrying", async () => {
+    let bizCalls = 0;
+    const startTime = Date.now();
+
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        const req = JSON.parse(raw);
+        if (req.method === "__xbridge_probe__") return;
+        bizCalls++;
+        const err = new Error("The object does not support the operation or argument.");
+        err.name = "InvalidAccessError";
+        throw err;
+      },
+    };
+
+    const bridge = new XBridge();
+    const callPromise = bridge.call("testDisposeDuringBackoff");
+
+    // After 20ms (well before 120ms backoff completes), dispose the bridge!
+    setTimeout(() => {
+      bridge.dispose();
+    }, 20);
+
+    // Call must reject with "disposed" immediately, without hanging or retrying
+    await assert.rejects(
+      () => callPromise,
+      (err) => err.message.includes("disposed")
+    );
+
+    const elapsed = Date.now() - startTime;
+    assert.ok(elapsed < 90, `Call must reject promptly upon dispose (${elapsed}ms < 90ms), not wait for 120ms backoff`);
+    assert.strictEqual(bizCalls, 1, "Must NOT have executed retry call after dispose");
+  });
+
+  test("36. Teardown protection: calling call() on already-disposed bridge immediately rejects", async () => {
+    const bridge = new XBridge();
+    bridge.dispose();
+
+    await assert.rejects(
+      () => bridge.call("anyMethod"),
+      (err) => err.message.includes("disposed")
+    );
+  });
+
+  test("37. Stress & Concurrency: 50 concurrent mixed calls with zero unhandled rejection and correct routing", async () => {
+    let unhandledCount = 0;
+    const onUnhandled = () => { unhandledCount++; };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      let callCount = 0;
+      globalThis.XBridge = {
+        postMessage: (raw) => {
+          const req = JSON.parse(raw);
+          if (req.method === "__xbridge_probe__") return;
+          callCount++;
+          const idx = req.params?.index ?? 0;
+          if (idx % 3 === 0) {
+            // Success response
+            setTimeout(() => {
+              globalThis.__XBridge__.resolve(req.id, { answer: `success_${idx}` });
+            }, 5);
+          } else if (idx % 3 === 1) {
+            // Business error response
+            setTimeout(() => {
+              globalThis.__XBridge__.reject(req.id, { code: -32001, message: `biz_error_${idx}` });
+            }, 5);
+          } else {
+            // Transient InvalidAccessError
+            const err = new Error("Provisional navigation in progress");
+            err.name = "InvalidAccessError";
+            throw err;
+          }
+        },
+      };
+
+      const bridge = new XBridge();
+      const promises = Array.from({ length: 50 }, async (_, i) => {
+        try {
+          const res = await bridge.call(`method_${i}`, { index: i }, { timeout: 300, fallback: `fb_${i}` });
+          return { status: "resolved", value: res };
+        } catch (err) {
+          return { status: "rejected", error: err };
+        }
+      });
+
+      const results = await Promise.all(promises);
+
+      for (let i = 0; i < 50; i++) {
+        const item = results[i];
+        if (i % 3 === 0) {
+          assert.deepStrictEqual(item.value, { answer: `success_${i}` });
+        } else if (i % 3 === 1) {
+          assert.strictEqual(item.status, "rejected");
+          assert.strictEqual(item.error.message, `biz_error_${i}`);
+        } else {
+          // Transient InvalidAccessError fell back safely to fallback
+          assert.strictEqual(item.value, `fb_${i}`);
+        }
+      }
+
+      await new Promise((r) => setTimeout(r, 100));
+      assert.strictEqual(unhandledCount, 0, "No unhandled rejection may escape under 50-concurrency load");
+
+      bridge.dispose();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("38. Boundary: circular structure parameter in call() rejects gracefully with TypeError and cleans up", async () => {
+    globalThis.XBridge = {
+      postMessage: () => {},
+    };
+
+    const bridge = new XBridge();
+    const circular = { name: "loop" };
+    circular.self = circular;
+
+    await assert.rejects(
+      () => bridge.call("circularTest", circular),
+      (err) => err instanceof TypeError
+    );
+
+    // Ensure dispatcher has no leaked pending requests
+    assert.strictEqual(bridge["core"]["dispatcher"].size, 0, "Dispatcher must have 0 pending entries after serialization failure");
+    bridge.dispose();
+  });
+
+  test("39. Host RPC: unregistered method returns standard -32601 Method not found", async () => {
+    let sentBack;
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        sentBack = JSON.parse(raw);
+      },
+    };
+
+    const bridge = new XBridge();
+    // Host invokes unknownMethod
+    globalThis.__XBridgeInbound__(
+      JSON.stringify({ jsonrpc: "2.0", id: "rpc_unknown", method: "nonExistentMethod", params: {} })
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepStrictEqual(sentBack, {
+      jsonrpc: "2.0",
+      id: "rpc_unknown",
+      error: { code: -32601, message: "Method not found" },
+    });
+
+    bridge.dispose();
+  });
+
+  test("40. Host RPC: handler async error serialization preserves Error name and message", async () => {
+    let sentBack;
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        sentBack = JSON.parse(raw);
+      },
+    };
+
+    const bridge = new XBridge();
+    bridge.registerHandler("failingHandler", async () => {
+      const err = new Error("Database query failed");
+      err.name = "DatabaseError";
+      throw err;
+    });
+
+    globalThis.__XBridgeInbound__(
+      JSON.stringify({ jsonrpc: "2.0", id: "rpc_fail", method: "failingHandler", params: {} })
+    );
+
+    await new Promise((r) => setTimeout(r, 15));
+    assert.strictEqual(sentBack.id, "rpc_fail");
+    assert.strictEqual(sentBack.error.code, -32000);
+    assert.strictEqual(sentBack.error.message, "Database query failed");
+    assert.deepStrictEqual(sentBack.error.data, { name: "DatabaseError", message: "Database query failed" });
+
+    bridge.dispose();
+  });
+
+  test("41. Independent AbortSignals: aborting one ready() does not affect concurrent ready()", async () => {
+    const bridge = new XBridge();
+    const ctrl1 = new AbortController();
+    const ctrl2 = new AbortController();
+
+    const p1 = bridge.ready(1000, ctrl1.signal);
+    const p2 = bridge.ready(1000, ctrl2.signal);
+
+    // Abort only ctrl1
+    ctrl1.abort();
+
+    // p1 must reject with aborted
+    await assert.rejects(
+      () => p1,
+      (err) => err.message.includes("aborted")
+    );
+
+    // Inject bridge so p2 can resolve
+    setTimeout(() => {
+      globalThis.XBridge = { postMessage: () => {} };
+      if (typeof globalThis.dispatchEvent === "function") {
+        globalThis.dispatchEvent(new Event("XBridgeReady"));
+      }
+    }, 20);
+
+    // p2 must resolve successfully
+    await p2;
+    assert.strictEqual(bridge.isConnected(), true);
+
+    bridge.dispose();
+  });
+
+  test("42. Inbound Robustness: Malformed or primitive inbound messages do not crash bridge", () => {
+    globalThis.XBridge = { postMessage: () => {} };
+    const bridge = new XBridge();
+
+    // Passing various malformed, primitive, or non-JSON payloads to __XBridgeInbound__
+    assert.doesNotThrow(() => {
+      globalThis.__XBridgeInbound__("null");
+      globalThis.__XBridgeInbound__("123");
+      globalThis.__XBridgeInbound__("true");
+      globalThis.__XBridgeInbound__("\"hello\"");
+      globalThis.__XBridgeInbound__("{}");
+      globalThis.__XBridgeInbound__("not-valid-json");
+      globalThis.__XBridgeInbound__(null);
+      globalThis.__XBridgeInbound__(42);
+      globalThis.__XBridgeInbound__(undefined);
+    });
+
+    bridge.dispose();
+  });
+
+  test("43. Host RPC handler returning circular structure sends back JSON-RPC -32603 response", async () => {
+    let sentPayload = null;
+    globalThis.XBridge = {
+      postMessage: (msg) => {
+        sentPayload = JSON.parse(msg);
+      },
+    };
+
+    const bridge = new XBridge();
+    const circularObj = { name: "circular" };
+    circularObj.self = circularObj;
+
+    bridge.registerHandler("getCircular", () => {
+      return circularObj;
+    });
+
+    globalThis.__XBridgeInbound__(
+      JSON.stringify({ jsonrpc: "2.0", id: "rpc_circ", method: "getCircular", params: {} })
+    );
+
+    await new Promise((r) => setTimeout(r, 15));
+    assert.notStrictEqual(sentPayload, null, "Must send response to host");
+    assert.strictEqual(sentPayload.id, "rpc_circ");
+    assert.strictEqual(sentPayload.error.code, -32603);
+    assert.match(sentPayload.error.message, /could not be serialized/);
+
+    bridge.dispose();
+  });
+
+  test("44. Post-disposal safeguards: bridge.call, onEvent, and registerHandler", async () => {
+    globalThis.XBridge = { postMessage: () => {} };
+    const bridge = new XBridge();
+    bridge.dispose();
+
+    // 1. call() rejects immediately
+    await assert.rejects(
+      bridge.call("test"),
+      (err) => err instanceof XBridgeSendError && err.message.includes("disposed")
+    );
+
+    // 2. onEvent returns clean unregister without throwing
+    const unlisten = bridge.onEvent("someEvent", () => {});
+    assert.strictEqual(typeof unlisten, "function");
+    assert.doesNotThrow(() => unlisten());
+
+    // 3. registerHandler returns clean unregister without throwing
+    const unregister = bridge.registerHandler("someMethod", () => {});
+    assert.strictEqual(typeof unregister, "function");
+    assert.doesNotThrow(() => unregister());
+
+    // 4. Repeated dispose is idempotent
+    assert.doesNotThrow(() => bridge.dispose());
+  });
+
+  test("45. Disposal while awaiting ready() inside call() rejects immediately", async () => {
+    // Disconnected environment
+    const bridge = new XBridge();
+
+    const callPromise = bridge.call("testMethod", {}, { readyTimeout: 5000 });
+
+    // While awaiting ready(), dispose the bridge
+    setTimeout(() => {
+      bridge.dispose();
+    }, 20);
+
+    const start = Date.now();
+    await assert.rejects(
+      callPromise,
+      (err) => err instanceof XBridgeSendError && err.message.includes("disposed")
+    );
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 1000, `Must reject immediately upon dispose, elapsed ${elapsed}ms`);
+  });
+
+  test("46. isInvalidAccessError boundary coverage: strings, Error objects, and depth limit", () => {
+    // String errors
+    assert.strictEqual(isInvalidAccessError("InvalidAccessError: Provisional navigation in progress"), true);
+    assert.strictEqual(isInvalidAccessError("The object does not support the operation"), true);
+    assert.strictEqual(isInvalidAccessError("Error: Some InvalidAccessError occurred"), true);
+    assert.strictEqual(isInvalidAccessError("NetworkError"), false);
+    assert.strictEqual(isInvalidAccessError(""), false);
+
+    // Error objects
+    const domErr = new Error("provisional navigation");
+    domErr.name = "InvalidAccessError";
+    assert.strictEqual(isInvalidAccessError(domErr), true);
+
+    const code15 = new Error("native error");
+    code15.code = 15;
+    assert.strictEqual(isInvalidAccessError(code15), true);
+
+    const msgErr = new Error("The object does not support the operation");
+    assert.strictEqual(isInvalidAccessError(msgErr), true);
+
+    const wrappedErr = new Error("Failed to call");
+    wrappedErr.cause = domErr;
+    assert.strictEqual(isInvalidAccessError(wrappedErr), true);
+
+    // Non-errors
+    assert.strictEqual(isInvalidAccessError(null), false);
+    assert.strictEqual(isInvalidAccessError(undefined), false);
+    assert.strictEqual(isInvalidAccessError(123), false);
+    assert.strictEqual(isInvalidAccessError({}), false);
+  });
+
+  test("47. ready() fast rejection on invalid or non-finite timeout inputs", async () => {
+    const bridge = new XBridge();
+
+    await assert.rejects(
+      bridge.ready(NaN),
+      (err) => err instanceof XBridgeSendError && err.message.includes("not ready")
+    );
+    await assert.rejects(
+      bridge.ready(-10),
+      (err) => err instanceof XBridgeSendError && err.message.includes("not ready")
+    );
+    await assert.rejects(
+      bridge.ready(0),
+      (err) => err instanceof XBridgeSendError && err.message.includes("not ready")
+    );
+
+    bridge.dispose();
+  });
+
+  test("48. Host __XBridge__.reject string & Error object normalization", async () => {
+    let lastSent = null;
+    globalThis.XBridge = {
+      postMessage: (msg) => {
+        lastSent = JSON.parse(msg);
+      },
+    };
+
+    const bridge = new XBridge();
+
+    // 1. Plain string reject from host
+    const p1 = bridge.call("testStringReject");
+    assert.notStrictEqual(lastSent, null);
+    globalThis.__XBridge__.reject(lastSent.id, "Host denied permission");
+    await assert.rejects(
+      p1,
+      (err) => err.code === -32000 && err.message === "Host denied permission"
+    );
+
+    // 2. Error object reject from host
+    lastSent = null;
+    const p2 = bridge.call("testErrorReject");
+    assert.notStrictEqual(lastSent, null);
+    const nativeErr = new TypeError("Native texture allocation failed");
+    globalThis.__XBridge__.reject(lastSent.id, nativeErr);
+    await assert.rejects(
+      p2,
+      (err) => err.code === -32000 && err.message === "Native texture allocation failed" && err.data.name === "TypeError"
+    );
+
+    bridge.dispose();
+  });
+
+  test("49. Host __XBridge__.resolve with circular structure rejects with -32603", async () => {
+    let lastSent = null;
+    globalThis.XBridge = {
+      postMessage: (msg) => {
+        lastSent = JSON.parse(msg);
+      },
+    };
+
+    const bridge = new XBridge();
+    const p = bridge.call("testResolveCircular");
+    assert.notStrictEqual(lastSent, null);
+
+    const circular = { foo: "bar" };
+    circular.self = circular;
+
+    // Host attempts to resolve with circular data
+    globalThis.__XBridge__.resolve(lastSent.id, circular);
+
+    await assert.rejects(
+      p,
+      (err) => err.code === -32603 && err.message.includes("could not be parsed")
+    );
+
+    bridge.dispose();
+  });
+
+  test("50. CustomEvent with circular detail params does not throw in listener", () => {
+    globalThis.XBridge = { postMessage: () => {} };
+    const bridge = new XBridge();
+
+    let received = null;
+    bridge.onEvent("testPush", (data) => {
+      received = data;
+    });
+
+    const circular = { key: "value" };
+    circular.self = circular;
+
+    assert.doesNotThrow(() => {
+      if (typeof globalThis.dispatchEvent === "function") {
+        globalThis.dispatchEvent(
+          new CustomEvent("XBridgeEvent", {
+            detail: { actionType: "testPush", params: circular },
+          })
+        );
+      }
+    });
+
+    bridge.dispose();
+  });
+
+  test("51. noCallback: true with circular structure parameter rejects cleanly with TypeError", async () => {
+    globalThis.XBridge = { postMessage: () => {} };
+    const bridge = new XBridge();
+
+    const circular = { tag: "noCallbackCircular" };
+    circular.self = circular;
+
+    await assert.rejects(
+      bridge.call("fireAndForget", circular, { noCallback: true }),
+      TypeError
+    );
 
     bridge.dispose();
   });

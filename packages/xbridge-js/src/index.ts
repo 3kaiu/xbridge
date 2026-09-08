@@ -19,9 +19,13 @@
 import type { IXBridgeAdapter } from "./core/adapter.js";
 import { XBridgeCore } from "./core/bridge.js";
 import type { XBridgeEventListener, XBridgeHandler } from "./core/bridge.js";
-import type { XBridgeCallOptions } from "./types.js";
+import type {
+  XBridgeCallOptions,
+  XBridgeTransportWarningHandler,
+} from "./types.js";
 import { XBridgeSendError } from "./types.js";
 import { StandardAdapter } from "./adapters/standard.js";
+import type { StandardAdapterOptions } from "./adapters/standard.js";
 import { setSniffCacheInvalidator } from "./adapters/standard.js";
 
 // Re-export the full public surface.
@@ -34,6 +38,7 @@ export type { IXBridgeAdapter } from "./core/adapter.js";
 export {
   StandardAdapter,
 } from "./adapters/index.js";
+export type { StandardAdapterOptions } from "./adapters/standard.js";
 export {
   XBRIDGE_PROTOCOL_VERSION,
   XBridgeSendError,
@@ -46,6 +51,8 @@ export type {
   XBridgeError,
   XBridgeMessage,
   XBridgeCallOptions,
+  XBridgeDiagnosticSnapshot,
+  XBridgeTransportWarningHandler,
 } from "./types.js";
 
 /** Constructor options for {@link XBridge}. */
@@ -58,6 +65,11 @@ export interface XBridgeOptions {
    * XBridgeCore will automatically and transparently failover to this adapter.
    */
   fallbackAdapter?: IXBridgeAdapter;
+  /**
+   * Observability hook for transport warnings and resilience metrics.
+   * Invoked when bridge postMessage throws an error or circuit-breaker trips.
+   */
+  onTransportWarning?: XBridgeTransportWarningHandler;
 }
 
 /**
@@ -74,10 +86,15 @@ class NoopAdapter implements IXBridgeAdapter {
   readonly name = "Noop";
   private _delegate: StandardAdapter | null = null;
   private _handler: ((raw: string | object) => void) | null = null;
+  private readonly _options?: StandardAdapterOptions;
+
+  constructor(options?: StandardAdapterOptions) {
+    this._options = options;
+  }
 
   private get delegate(): StandardAdapter {
     if (this._delegate === null) {
-      this._delegate = new StandardAdapter();
+      this._delegate = new StandardAdapter(this._options);
       if (this._handler !== null) {
         this._delegate.onMessage(this._handler);
       }
@@ -204,11 +221,14 @@ function detectEnv(): SniffCache {
  * {@link XBridgeCore.ready} polling and live `isAvailable()` checks, not by
  * eagerly defaulting to StandardAdapter.
  */
-function pickAdapter(env: SniffCache): IXBridgeAdapter {
+function pickAdapter(env: SniffCache, options?: XBridgeOptions): IXBridgeAdapter {
+  const adapterOpts: StandardAdapterOptions | undefined = options?.onTransportWarning
+    ? { onTransportWarning: options.onTransportWarning }
+    : undefined;
   if (env.hasStandard) {
-    return new StandardAdapter();
+    return new StandardAdapter(adapterOpts);
   }
-  return new NoopAdapter();
+  return new NoopAdapter(adapterOpts);
 }
 
 /**
@@ -281,10 +301,10 @@ export class XBridge {
       (options.adapter !== undefined || options.fallbackAdapter !== undefined)
     ) {
       // Manual override: use the explicitly provided adapter(s).
-      this._adapter = options.adapter ?? pickAdapter(env);
+      this._adapter = options.adapter ?? pickAdapter(env, options);
       this._fallbackAdapter = options.fallbackAdapter;
     } else {
-      this._adapter = pickAdapter(env);
+      this._adapter = pickAdapter(env, options);
       this._fallbackAdapter = undefined;
     }
     this.core = new XBridgeCore(this._adapter, this._fallbackAdapter);
@@ -304,10 +324,11 @@ export class XBridge {
    * Wait for the bridge transport to become available and ready.
    *
    * @param timeoutMs max milliseconds to wait (default 3000ms).
+   * @param signal optional AbortSignal to cancel waiting.
    * @returns Promise that resolves when the bridge is ready.
    */
-  ready(timeoutMs?: number): Promise<void> {
-    return this.core.ready(timeoutMs);
+  ready(timeoutMs?: number, signal?: AbortSignal): Promise<void> {
+    return this.core.ready(timeoutMs, signal);
   }
 
   /** Async RPC. @see {@link XBridgeCore.call}. */
