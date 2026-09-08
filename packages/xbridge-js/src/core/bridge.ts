@@ -23,7 +23,7 @@ import type {
   XBridgeRequest,
   XBridgeResponse,
 } from "../types.js";
-import { XBRIDGE_PROTOCOL_VERSION, XBridgeSendError } from "../types.js";
+import { XBRIDGE_PROTOCOL_VERSION, XBridgeSendError, isInvalidAccessError } from "../types.js";
 
 /** Event listener signature for {@link XBridgeCore.onEvent}. */
 export type XBridgeEventListener = (params: unknown) => void;
@@ -220,11 +220,17 @@ export class XBridgeCore {
               `[XBridge] call('${method}') encountered InvalidAccessError (likely network recovery race), waiting for XBridgeReady...`,
             );
           }
-          // Wait for bridge to become ready (max 500ms)
+          // Wait for bridge ready event (up to 500ms) or auto backoff 120ms for legacy apps without XBridgeReady event
+          let backoffTimer: ReturnType<typeof setTimeout> | undefined;
           try {
-            await this.ready(500);
+            await Promise.race([
+              this.ready(500),
+              new Promise((resolve) => {
+                backoffTimer = setTimeout(resolve, 120);
+              }),
+            ]);
             if (typeof console !== "undefined") {
-              console.warn(`[XBridge] call('${method}') XBridge ready, retrying...`);
+              console.warn(`[XBridge] call('${method}') auto-retrying after backoff/ready...`);
             }
             // Retry once with _retryAttempt flag to prevent infinite loop
             return await this.call(method, params, {
@@ -238,9 +244,18 @@ export class XBridgeCore {
                 `[XBridge] call('${method}') ready timeout, treating as permanently unavailable`,
               );
             }
+          } finally {
+            if (backoffTimer !== undefined) {
+              clearTimeout(backoffTimer);
+            }
           }
         }
-        // Re-throw original error after retry failure or non-retryable error
+        if (this.isInvalidAccessError(err)) {
+          if (hasFallback) {
+            return (options as XBridgeCallOptions).fallback;
+          }
+          return undefined;
+        }
         throw err;
       }
     })();
@@ -252,17 +267,10 @@ export class XBridgeCore {
 
   /**
    * Check if an error is an InvalidAccessError from postMessage.
-   * This typically occurs during network recovery when the WebView bridge
-   * channel is not yet ready.
+   * Delegates to {@link isInvalidAccessError} with cycle and depth protection.
    */
   private isInvalidAccessError(err: unknown): boolean {
-    if (!err) return false;
-    const error = err as { name?: string; message?: string };
-    return (
-      error.name === "InvalidAccessError" ||
-      (typeof error.message === "string" &&
-        /The object does not support the operation/.test(error.message))
-    );
+    return isInvalidAccessError(err);
   }
 
   /**
@@ -317,7 +325,9 @@ export class XBridgeCore {
         if (hasFallback) {
           return Promise.resolve((options as XBridgeCallOptions).fallback);
         }
-        return Promise.reject(err);
+        const rejected = Promise.reject(err);
+        rejected.catch(() => {});
+        return rejected;
       }
       return Promise.resolve(undefined);
     }
@@ -362,6 +372,7 @@ export class XBridgeCore {
         reject(err);
       }
     });
+    pendingPromise.catch(() => {});
     return pendingPromise;
   }
 

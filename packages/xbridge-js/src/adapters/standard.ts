@@ -16,7 +16,7 @@
  */
 
 import type { IXBridgeAdapter } from "../core/adapter.js";
-import { XBRIDGE_PROTOCOL_VERSION, XBridgeSendError } from "../types.js";
+import { XBRIDGE_PROTOCOL_VERSION, XBridgeSendError, isInvalidAccessError } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Typed global interfaces (W1: replace `as any` with proper typing)
@@ -252,9 +252,6 @@ export class StandardAdapter implements IXBridgeAdapter {
    * `webkit.messageHandlers.XBridge` handler is not actually registered, so a
    * synchronous call catches exactly the "present-but-broken" environment we
    * want to detect before any business call touches it.
-   *
-   * Records [availabilityProbeAt] on every attempt so `isAvailable()` can later
-   * distinguish a freshly-broken verdict from a stale one that has cooled down.
    */
   private probeAvailability(w: WindowWithXBridge): void {
     if (this.availabilityProbeTransmitted) {
@@ -373,10 +370,13 @@ export class StandardAdapter implements IXBridgeAdapter {
         this.failureCount = 0;
         return;
       } catch (err) {
-        this.failureCount++;
-        this.lastFailureTime = Date.now();
-        if (this.circuitState === "PROBING" || this.failureCount >= StandardAdapter.MAX_FAILURES) {
-          this.circuitState = "OPEN";
+        const isTransient = isInvalidAccessError(err);
+        if (!isTransient) {
+          this.failureCount++;
+          this.lastFailureTime = Date.now();
+          if (this.circuitState === "PROBING" || this.failureCount >= StandardAdapter.MAX_FAILURES) {
+            this.circuitState = "OPEN";
+          }
         }
 
         // ── Diagnostic snapshot (triage for InvalidAccessError) ──────────

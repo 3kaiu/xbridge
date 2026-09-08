@@ -448,4 +448,236 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
     assert.equal(adapter.availabilityProbe, "unprobed");
     adapter.destroy();
   });
+  test("20. postMessage InvalidAccessError must NEVER fire global unhandledrejection", async () => {
+    let unhandledCaught = false;
+    const onUnhandled = (reason) => { unhandledCaught = true; };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const mockPostMessage = () => {
+        const err = new Error("The object does not support the operation or argument.");
+        err.name = "InvalidAccessError";
+        throw err;
+      };
+
+      globalThis.window = globalThis;
+      globalThis.XBridge = { postMessage: mockPostMessage };
+
+      const adapter = new StandardAdapter();
+      const bridge = new XBridgeCore(adapter);
+
+      // Call method without fallback; should safely settle without unhandled rejection
+      const res = await bridge.call("testSafeHeight", {}, { timeout: 100, readyTimeout: 100 });
+      assert.strictEqual(res, undefined);
+
+      // Wait 150ms to cross all microtask and timer boundaries
+      await new Promise(r => setTimeout(r, 150));
+      assert.strictEqual(unhandledCaught, false, "Must not fire unhandledRejection");
+
+      bridge.dispose();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      delete globalThis.XBridge;
+      delete globalThis.window;
+    }
+  });
+  test("21. noCallback: true with InvalidAccessError must NEVER fire global unhandledrejection", async () => {
+    let unhandledCaught = false;
+    const onUnhandled = (reason) => { unhandledCaught = true; };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const mockPostMessage = () => {
+        const err = new Error("The object does not support the operation or argument.");
+        err.name = "InvalidAccessError";
+        throw err;
+      };
+
+      globalThis.window = globalThis;
+      globalThis.XBridge = { postMessage: mockPostMessage };
+
+      const adapter = new StandardAdapter();
+      const bridge = new XBridgeCore(adapter);
+
+      const res = await bridge.call("stopSound", {}, { noCallback: true, timeout: 100, readyTimeout: 100 });
+      assert.strictEqual(res, undefined);
+
+      await new Promise(r => setTimeout(r, 150));
+      assert.strictEqual(unhandledCaught, false, "Must not fire unhandledRejection");
+
+      bridge.dispose();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      delete globalThis.XBridge;
+      delete globalThis.window;
+    }
+  });
+
+  test("22. Regular business errors must still be properly thrown and not suppressed", async () => {
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        const req = JSON.parse(raw);
+        setTimeout(() => {
+          globalThis.__XBridge__.reject(req.id, { code: 403, message: "Permission Denied" });
+        }, 5);
+      },
+    };
+
+    const bridge = new XBridge();
+    assert.equal(bridge.isConnected(), true);
+
+    await assert.rejects(
+      bridge.call("getUserToken", {}),
+      (err) => {
+        assert.strictEqual(err.code, 403);
+        assert.strictEqual(err.message, "Permission Denied");
+        return true;
+      },
+      "Business error must be thrown normally"
+    );
+
+    bridge.dispose();
+  });
+  test("23. Concurrency storm: 10 simultaneous calls with InvalidAccessError must NEVER fire unhandledrejection", async () => {
+    let unhandledCount = 0;
+    const onUnhandled = () => { unhandledCount++; };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const mockPostMessage = () => {
+        const err = new Error("The object does not support the operation or argument.");
+        err.name = "InvalidAccessError";
+        throw err;
+      };
+
+      globalThis.window = globalThis;
+      globalThis.XBridge = { postMessage: mockPostMessage };
+
+      const adapter = new StandardAdapter();
+      const bridge = new XBridgeCore(adapter);
+
+      // Launch 10 concurrent requests at the exact same microtask tick
+      const promises = Array.from({ length: 10 }, (_, i) =>
+        bridge.call(`batchMethod_${i}`, { index: i }, { timeout: 100, readyTimeout: 100, fallback: `fallback_${i}` })
+      );
+
+      const results = await Promise.all(promises);
+      for (let i = 0; i < 10; i++) {
+        assert.strictEqual(results[i], `fallback_${i}`);
+      }
+
+      await new Promise(r => setTimeout(r, 200));
+      assert.strictEqual(unhandledCount, 0, "No unhandled rejection must escape during concurrent storm");
+
+      bridge.dispose();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      delete globalThis.XBridge;
+      delete globalThis.window;
+    }
+  });
+
+  test("24. Legacy iOS App startup race self-healing: transient error recovers on 120ms backoff retry", async () => {
+    let bizAttempts = 0;
+    let bizCalls = 0;
+
+    globalThis.XBridge = {
+      postMessage: (raw) => {
+        const req = JSON.parse(raw);
+        // Probe message passes (host has injected handle)
+        if (req.method === "__xbridge_probe__") {
+          return;
+        }
+        bizCalls++;
+        // First business attempt throws InvalidAccessError (Provisional Navigation)
+        if (bizAttempts === 0) {
+          bizAttempts++;
+          const err = new Error("The object does not support the operation or argument.");
+          err.name = "InvalidAccessError";
+          throw err;
+        }
+        // Second business attempt (after ~120ms backoff) succeeds!
+        setTimeout(() => {
+          globalThis.__XBridge__.resolve(req.id, { height: 44 });
+        }, 10);
+      },
+    };
+
+    const bridge = new XBridge();
+    assert.equal(bridge.isConnected(), true);
+
+    // Caller issues getStatusBarHeight during page startup
+    const res = await bridge.call("getStatusBarHeight", {});
+    assert.deepStrictEqual(res, { height: 44 }, "Must successfully recover and return response after retry");
+    assert.strictEqual(bizCalls, 2, "Business call must have retried exactly once and succeeded");
+
+    bridge.dispose();
+  });
+
+  test("25. Circuit breaker immunity: consecutive InvalidAccessError must NEVER trip circuit breaker to OPEN", async () => {
+    let callCount = 0;
+    const adapter = new StandardAdapter();
+
+    globalThis.window = globalThis;
+    globalThis.XBridge = {
+      postMessage: () => {
+        callCount++;
+        if (callCount <= 5) {
+          const err = new Error("The object does not support the operation or argument.");
+          err.name = "InvalidAccessError";
+          throw err;
+        }
+        // Call 6 succeeds
+      },
+    };
+
+    // Send 5 transient errors (exceeding MAX_FAILURES = 2)
+    for (let i = 0; i < 5; i++) {
+      assert.throws(
+        () => adapter.send(JSON.stringify({ jsonrpc: "2.0", id: `test_${i}`, method: "testMethod" })),
+        (err) => err.name === "XBridgeSendError"
+      );
+    }
+
+    // Circuit state must remain CLOSED and healthy
+    assert.strictEqual(adapter.state, "CLOSED", "Transient errors must not trip circuit breaker");
+
+    // Call 6 must send without being rejected by circuit breaker
+    assert.doesNotThrow(() => {
+      adapter.send(JSON.stringify({ jsonrpc: "2.0", id: "test_6", method: "testMethod" }));
+    });
+
+    adapter.destroy();
+    delete globalThis.XBridge;
+    delete globalThis.window;
+  });
+
+  test("26. Heterogeneous InvalidAccessError detection: DOMException code 15 and deeply nested cause", async () => {
+    const adapter = new StandardAdapter();
+    const bridge = new XBridgeCore(adapter);
+
+    // Deeply nested cause: Error -> SendError -> DOMException-like
+    const nestedError = new Error("Top level failure", {
+      cause: new Error("Wrapper failure", {
+        cause: { name: "InvalidAccessError", code: 15, message: "native denied" }
+      })
+    });
+
+    assert.strictEqual(bridge["isInvalidAccessError"](nestedError), true, "Deeply nested cause must be detected");
+
+    // Irrelevant errors must NOT be detected
+    const typeError = new TypeError("Cannot read property of undefined");
+    assert.strictEqual(bridge["isInvalidAccessError"](typeError), false, "TypeError must not match");
+
+    const networkError = new Error("Network request failed");
+    assert.strictEqual(bridge["isInvalidAccessError"](networkError), false, "NetworkError must not match");
+
+    // Circular cause must not cause RangeError stack overflow
+    const circularError = new Error("Circular parent");
+    const childError = new Error("Circular child", { cause: circularError });
+    circularError.cause = childError;
+    assert.strictEqual(bridge["isInvalidAccessError"](circularError), false, "Circular error must terminate safely without stack overflow");
+
+    bridge.dispose();
+  });
 });

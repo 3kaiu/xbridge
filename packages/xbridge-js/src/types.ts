@@ -128,3 +128,30 @@ export class XBridgeSendError extends Error {
     this.cause = cause;
   }
 }
+
+/**
+ * Check if an error is an InvalidAccessError from postMessage.
+ * This typically occurs during network recovery, page transitions (provisional
+ * navigation), or detached frames in WebKit / WKWebView (DOMException code 15).
+ *
+ * Uses iterative traversal with maxDepth to guarantee immunity against
+ * circular cause references and call stack exhaustion.
+ */
+export function isInvalidAccessError(err: unknown, maxDepth = 5): boolean {
+  let current: unknown = err;
+  let depth = 0;
+  while (current !== null && typeof current === "object" && depth < maxDepth) {
+    const error = current as { name?: string; message?: string; cause?: unknown; code?: number };
+    if (
+      error.name === "InvalidAccessError" ||
+      error.code === 15 ||
+      (typeof error.message === "string" &&
+        /The object does not support the operation/i.test(error.message))
+    ) {
+      return true;
+    }
+    current = error.cause;
+    depth++;
+  }
+  return false;
+}

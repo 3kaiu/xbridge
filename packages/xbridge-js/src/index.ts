@@ -37,6 +37,7 @@ export {
 export {
   XBRIDGE_PROTOCOL_VERSION,
   XBridgeSendError,
+  isInvalidAccessError,
 } from "./types.js";
 export type {
   XBridgeRequest,
