@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'xbridge_flutter'
-  s.version          = '0.1.7'
+  s.version          = '0.1.9'
   s.summary          = 'XBridge Flutter plugin — bridge SDK for H5 ↔ Flutter ↔ Native.'
   s.description      = <<-DESC
 XBridge Flutter plugin provides the native Android and iOS integration for
