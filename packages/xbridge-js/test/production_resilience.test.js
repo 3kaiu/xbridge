@@ -1445,4 +1445,50 @@ describe("XBridge Production-Grade Resilience & Backward Compatibility", () => {
 
     bridge.dispose();
   });
+
+  test("52. Zero unhandled rejection window: Promise remains pending across 120ms backoff on transient InvalidAccessError", async () => {
+    let unhandledCount = 0;
+    const onUnhandled = () => { unhandledCount++; };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      let attempts = 0;
+      globalThis.XBridge = {
+        postMessage: (raw) => {
+          const req = JSON.parse(raw);
+          if (req.method === "__xbridge_probe__") return;
+          attempts++;
+          if (attempts === 1) {
+            const err = new Error("The object does not support the operation or argument.");
+            err.name = "InvalidAccessError";
+            throw err;
+          }
+          // Second attempt succeeds
+          setTimeout(() => {
+            globalThis.__XBridge__.resolve(req.id, { safe: true });
+          }, 5);
+        },
+      };
+
+      const bridge = new XBridge();
+      // Floating promise (not awaited immediately) to simulate real-world unawaited bridge call
+      const promise = bridge.call("testFloatingCall", {}, { fallback: null });
+
+      // Check promise state during backoff window (50ms into 120ms backoff)
+      await new Promise(r => setTimeout(r, 50));
+      assert.strictEqual(attempts, 1, "Attempt 0 must have thrown, now waiting backoff");
+      assert.strictEqual(unhandledCount, 0, "No unhandled rejection may fire during backoff window");
+
+      // Now await completion
+      const res = await promise;
+      assert.deepStrictEqual(res, { safe: true }, "Must recover real value on attempt 1");
+      assert.strictEqual(attempts, 2, "Must have retried on attempt 1");
+      assert.strictEqual(unhandledCount, 0, "Zero unhandled rejections after completion");
+
+      bridge.dispose();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      delete globalThis.XBridge;
+    }
+  });
 });

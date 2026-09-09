@@ -212,7 +212,6 @@ export class XBridgeCore {
   call(method: string, params?: unknown, options?: XBridgeCallOptions): Promise<unknown> {
     const hasFallback = options !== undefined && "fallback" in options;
     const readyTimeout = options?.readyTimeout ?? 1500;
-    const retryAttempt = options?._retryAttempt ?? 0;
     // 关键：`call` 不能是 async，否则 `return pendingPromise` 会让 async 机制
     // 生成一个「采纳后的新 promise」返回给调用方，而本方法内的 no-op catch 若只
     // 挂在内部 `pendingPromise` 上，就保护不了调用方实际持有的那个采纳 promise，
@@ -244,66 +243,6 @@ export class XBridgeCore {
       try {
         return await this.callDispatch(method, params, options, hasFallback);
       } catch (err) {
-        // Auto-retry on InvalidAccessError (network recovery race condition)
-        if (this.isInvalidAccessError(err) && retryAttempt === 0) {
-          if (this.disposed) {
-            throw new XBridgeSendError("[XBridge] bridge has been disposed");
-          }
-          if (typeof console !== "undefined") {
-            console.warn(
-              `[XBridge] call('${method}') encountered InvalidAccessError (likely network recovery race), waiting for XBridgeReady...`,
-            );
-          }
-          // P0-1 fix: DO NOT race this.ready(500) because isConnected() === true returns immediately (0.12ms)!
-          // Instead, race the XBridgeReady event against a 120ms backoff timer.
-          // If native host emits XBridgeReady within 120ms, wake up immediately;
-          // otherwise wait full 120ms for legacy hosts (v0.1.0/v0.1.6) without the event.
-          await new Promise<void>((resolve, reject) => {
-            let backoffTimer: ReturnType<typeof setTimeout> | undefined;
-            let cleanedUp = false;
-            const cleanup = (): void => {
-              if (cleanedUp) return;
-              cleanedUp = true;
-              if (backoffTimer !== undefined) {
-                clearTimeout(backoffTimer);
-                backoffTimer = undefined;
-              }
-              if (typeof globalThis !== "undefined" && typeof globalThis.removeEventListener === "function") {
-                globalThis.removeEventListener("XBridgeReady", onReady);
-              }
-              this.pendingReadyCleanups.delete(cleanup);
-              this.pendingReadyRejects.delete(reject);
-            };
-            const onReady = (): void => {
-              cleanup();
-              resolve();
-            };
-
-            this.pendingReadyCleanups.add(cleanup);
-            this.pendingReadyRejects.add(reject);
-
-            backoffTimer = setTimeout((): void => {
-              cleanup();
-              resolve();
-            }, 120);
-            if (typeof globalThis !== "undefined" && typeof globalThis.addEventListener === "function") {
-              globalThis.addEventListener("XBridgeReady", onReady, { once: true });
-            }
-          });
-
-          if (this.disposed) {
-            throw new XBridgeSendError("[XBridge] bridge has been disposed");
-          }
-
-          if (typeof console !== "undefined") {
-            console.warn(`[XBridge] call('${method}') auto-retrying after backoff/ready...`);
-          }
-          // Retry once with _retryAttempt flag to prevent infinite loop
-          return await this.call(method, params, {
-            ...options,
-            _retryAttempt: 1,
-          });
-        }
         if (this.isInvalidAccessError(err)) {
           if (hasFallback) {
             return (options as XBridgeCallOptions).fallback;
@@ -328,8 +267,82 @@ export class XBridgeCore {
   }
 
   /**
+   * Race the XBridgeReady event against a 120ms backoff timer.
+   *
+   * If native host emits XBridgeReady within 120ms (modern iOS container),
+   * wakes up immediately; otherwise waits full 120ms for legacy hosts (v0.1.0/v0.1.6).
+   */
+  private waitBackoff(backoffMs: number = 120): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let backoffTimer: ReturnType<typeof setTimeout> | undefined;
+      let cleanedUp = false;
+      const cleanup = (): void => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        if (backoffTimer !== undefined) {
+          clearTimeout(backoffTimer);
+          backoffTimer = undefined;
+        }
+        if (typeof globalThis !== "undefined" && typeof globalThis.removeEventListener === "function") {
+          globalThis.removeEventListener("XBridgeReady", onReady);
+        }
+        this.pendingReadyCleanups.delete(cleanup);
+        this.pendingReadyRejects.delete(reject);
+      };
+      const onReady = (): void => {
+        cleanup();
+        resolve();
+      };
+
+      this.pendingReadyCleanups.add(cleanup);
+      this.pendingReadyRejects.add(reject);
+
+      backoffTimer = setTimeout((): void => {
+        cleanup();
+        resolve();
+      }, backoffMs);
+      if (typeof globalThis !== "undefined" && typeof globalThis.addEventListener === "function") {
+        globalThis.addEventListener("XBridgeReady", onReady, { once: true });
+      }
+    });
+  }
+
+  /**
+   * Attempt transmission on primary adapter, transparently failing over to
+   * fallbackAdapter if available.
+   */
+  private doSend(request: XBridgeRequest, method: string): void {
+    const raw = JSON.stringify(request);
+    try {
+      this.adapter.send(raw);
+    } catch (err) {
+      if (isSendError(err) && this.fallbackAdapter && this.fallbackAdapter.isAvailable()) {
+        try {
+          if (typeof console !== "undefined") {
+            console.warn(
+              `[XBridge] call('${method}') primary adapter (${this.adapter.name}) failed, failing over to ${this.fallbackAdapter.name}`,
+            );
+          }
+          this.fallbackAdapter.send(raw);
+          return;
+        } catch (fallbackErr) {
+          err = fallbackErr;
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Core dispatch for {@link call} after the ready handshake completes.
    * Returns the promise that settles with the response (or rejection).
+   *
+   * Resilient retry model:
+   * When postMessage throws synchronous InvalidAccessError (iOS WKWebView detach or network recovery race),
+   * the pending Promise is KEPT PENDING. It does NOT call reject(err), preventing WebKit from emitting
+   * an unhandledrejection event during the 120ms backoff interval. The retry is executed in-place;
+   * if the retry also encounters InvalidAccessError, it resolves fallback or undefined. Under no
+   * circumstances does InvalidAccessError ever result in an unhandled rejection.
    */
   private callDispatch(
     method: string,
@@ -344,6 +357,7 @@ export class XBridgeCore {
     }
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
     const noCallback = options?.noCallback === true;
+    const retryAttempt = options?._retryAttempt ?? 0;
 
     const id = noCallback ? null : generateId();
     const request: XBridgeRequest = {
@@ -358,34 +372,39 @@ export class XBridgeCore {
       // We deliberately do not register a pending entry — there is no id to
       // correlate on the host side (host treats id === null as "no reply").
       try {
-        this.adapter.send(JSON.stringify(request));
+        this.doSend(request, method);
+        return Promise.resolve(undefined);
       } catch (err) {
-        // Transparent failover to fallbackAdapter if available
-        if (isSendError(err) && this.fallbackAdapter && this.fallbackAdapter.isAvailable()) {
-          try {
-            if (typeof console !== "undefined") {
-              console.warn(
-                `[XBridge] call('${method}') primary adapter (${this.adapter.name}) failed, failing over to ${this.fallbackAdapter.name}`,
-              );
-            }
-            this.fallbackAdapter.send(JSON.stringify(request));
-            return Promise.resolve(undefined);
-          } catch (fallbackErr) {
-            err = fallbackErr;
-          }
-        }
-
         if (typeof console !== "undefined") {
           console.warn(
             `[XBridge] call('${method}') failed to send:`,
             err instanceof Error ? err.message : err,
           );
         }
-        const retryAttempt = options?._retryAttempt ?? 0;
-        if (this.isInvalidAccessError(err) && retryAttempt === 0) {
-          const rejected = Promise.reject(err);
-          rejected.catch(() => {});
-          return rejected;
+        if (this.isInvalidAccessError(err)) {
+          if (retryAttempt === 0) {
+            return this.waitBackoff().then(() => {
+              if (this.disposed) {
+                throw new XBridgeSendError("[XBridge] bridge has been disposed");
+              }
+              try {
+                if (typeof console !== "undefined") {
+                  console.warn(`[XBridge] call('${method}') auto-retrying after backoff/ready...`);
+                }
+                this.doSend(request, method);
+                return undefined;
+              } catch (retryErr) {
+                if (this.isInvalidAccessError(retryErr)) {
+                  return hasFallback ? (options as XBridgeCallOptions).fallback : undefined;
+                }
+                if (hasFallback) {
+                  return (options as XBridgeCallOptions).fallback;
+                }
+                throw retryErr;
+              }
+            });
+          }
+          return Promise.resolve(hasFallback ? (options as XBridgeCallOptions).fallback : undefined);
         }
         if (hasFallback) {
           return Promise.resolve((options as XBridgeCallOptions).fallback);
@@ -394,7 +413,6 @@ export class XBridgeCore {
         rejected.catch(() => {});
         return rejected;
       }
-      return Promise.resolve(undefined);
     }
 
     const pendingPromise = new Promise<unknown>((resolve, reject): void => {
@@ -404,25 +422,9 @@ export class XBridgeCore {
         timeout,
       );
       try {
-        this.adapter.send(JSON.stringify(request));
+        this.doSend(request, method);
       } catch (err) {
-        // Transparent failover to fallbackAdapter if available
-        if (isSendError(err) && this.fallbackAdapter && this.fallbackAdapter.isAvailable()) {
-          try {
-            if (typeof console !== "undefined") {
-              console.warn(
-                `[XBridge] call('${method}') primary adapter (${this.adapter.name}) failed, failing over to ${this.fallbackAdapter.name}`,
-              );
-            }
-            this.fallbackAdapter.send(JSON.stringify(request));
-            // Successfully handed off to fallbackAdapter — keep the pending entry alive!
-            return;
-          } catch (fallbackErr) {
-            err = fallbackErr;
-          }
-        }
-
-        // Send failed on all available transports — clean up pending entry before resolving fallback or rejecting
+        // Send failed on all available transports — clean up pending entry
         this.dispatcher.cancel(id as string);
         if (typeof console !== "undefined") {
           console.warn(
@@ -430,11 +432,57 @@ export class XBridgeCore {
             err instanceof Error ? err.message : err,
           );
         }
-        const retryAttempt = options?._retryAttempt ?? 0;
-        if (this.isInvalidAccessError(err) && retryAttempt === 0) {
-          reject(err);
+
+        if (this.isInvalidAccessError(err)) {
+          if (retryAttempt === 0) {
+            // In-place wait & retry: KEEP PROMISE PENDING!
+            // Do NOT call reject(err), which would trigger WebKit's unhandledrejection
+            // during the 120ms backoff interval!
+            this.waitBackoff().then(() => {
+              if (this.disposed) {
+                reject(new XBridgeSendError("[XBridge] bridge has been disposed"));
+                return;
+              }
+              this.dispatcher.register(
+                id as string,
+                { method, resolve, reject },
+                timeout,
+              );
+              try {
+                if (typeof console !== "undefined") {
+                  console.warn(`[XBridge] call('${method}') auto-retrying after backoff/ready...`);
+                }
+                this.doSend(request, method);
+              } catch (retryErr) {
+                this.dispatcher.cancel(id as string);
+                if (typeof console !== "undefined") {
+                  console.warn(
+                    `[XBridge] call('${method}') retry failed to send:`,
+                    retryErr instanceof Error ? retryErr.message : retryErr,
+                  );
+                }
+                if (this.isInvalidAccessError(retryErr)) {
+                  // Both attempts hit InvalidAccessError: resolve fallback/undefined, NEVER reject!
+                  resolve(hasFallback ? (options as XBridgeCallOptions).fallback : undefined);
+                  return;
+                }
+                if (hasFallback) {
+                  resolve((options as XBridgeCallOptions).fallback);
+                  return;
+                }
+                reject(retryErr);
+              }
+            }).catch((backoffErr) => {
+              this.dispatcher.cancel(id as string);
+              reject(backoffErr);
+            });
+            return;
+          }
+          // Retry attempt already exhausted
+          resolve(hasFallback ? (options as XBridgeCallOptions).fallback : undefined);
           return;
         }
+
         if (hasFallback) {
           resolve((options as XBridgeCallOptions).fallback);
           return;

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-09-09
+
+### Fixed
+- **Root-Cause Elimination of WebKit Unhandled Rejection**: In `callDispatch`, when `adapter.send` throws a synchronous `InvalidAccessError` (iOS WKWebView detach or network recovery race), the pending Promise is now kept in `pending` state during the 120ms backoff interval. It NEVER calls `reject(err)`. This completely prevents WebKit/Safari from capturing a transient rejected promise and emitting `window.onunhandledrejection` to monitoring agents (ARMS/Sentry).
+- **In-Place Safe Retry Execution**: Retry execution on transient `InvalidAccessError` is handled in-place; if the retry also encounters `InvalidAccessError`, it resolves `fallback ?? undefined` without ever rejecting. Host business errors (RPC errors returned by native via `__XBridge__.reject`) remain completely unaffected and reject cleanly to callers.
+
 ## [0.1.8] - 2026-09-08
 
 ### Fixed
